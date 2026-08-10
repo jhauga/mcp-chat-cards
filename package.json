@@ -1,0 +1,55 @@
+{
+  "name": "mcp-chat-cards",
+  "version": "0.0.0-alpha",
+  "description": "MCP server that renders interactive HTML cards (tabs, tables, forms, charts, video, show/hide, sequential lists) inside desktop chat clients.",
+  "license": "MIT",
+  "author": "John Hauagabook",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mcp-chat-cards": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "html-cards",
+    "claude-desktop",
+    "interactive-ui"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jhauga/mcp-chat-cards.git"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "fflate": "^0.8.3",
+    "marked": "^18.0.9",
+    "node-html-parser": "^6.1.13",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.8"
+  }
+}
