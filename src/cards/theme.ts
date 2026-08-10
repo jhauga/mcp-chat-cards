@@ -14,7 +14,31 @@ export const CARD_THEME_CSS = `
   --mcc-primary-soft: #e7f0f9;
   --mcc-green: #2f855a;
   --mcc-accent: #b45309;
+  --mcc-head-a: #f2f7fc;
+  --mcc-head-b: #eaf1f8;
+  --mcc-soft-bg: #f7fafc;
+  --mcc-code-bg: #f3f6fa;
+  --mcc-reveal-bg: #fbfdfe;
   --mcc-radius: 10px;
+}
+/* Applied by the MCP Apps template when the host reports a dark theme. */
+:root[data-theme="dark"] {
+  --mcc-bg-a: #161a20;
+  --mcc-bg-b: #12161b;
+  --mcc-surface: #1d232b;
+  --mcc-text: #e8edf2;
+  --mcc-muted: #9aa7b4;
+  --mcc-border: #313c48;
+  --mcc-primary: #5b9bd5;
+  --mcc-primary-dark: #93bfe8;
+  --mcc-primary-soft: #253444;
+  --mcc-green: #5cbd8f;
+  --mcc-accent: #d9a05f;
+  --mcc-head-a: #222933;
+  --mcc-head-b: #1c232c;
+  --mcc-soft-bg: #191f26;
+  --mcc-code-bg: #171d24;
+  --mcc-reveal-bg: #1a2129;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
@@ -39,7 +63,7 @@ body {
   justify-content: space-between;
   gap: 8px;
   padding: 10px 14px;
-  background: linear-gradient(180deg, #f2f7fc, #eaf1f8);
+  background: linear-gradient(180deg, var(--mcc-head-a), var(--mcc-head-b));
   border-bottom: 1px solid var(--mcc-border);
 }
 .mcc-head h1 { font-size: 16px; margin: 0; font-weight: 600; }
@@ -51,7 +75,7 @@ body {
   font-size: 11px;
   color: var(--mcc-muted);
   border-top: 1px solid var(--mcc-border);
-  background: #f7fafc;
+  background: var(--mcc-soft-bg);
 }
 .mcc-btn {
   font: inherit;
@@ -122,7 +146,7 @@ table.mcc-table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .mcc-table caption { caption-side: top; text-align: left; color: var(--mcc-muted); font-size: 12px; padding-bottom: 6px; }
 .mcc-table th, .mcc-table td { border: 1px solid var(--mcc-border); padding: 6px 10px; text-align: left; vertical-align: top; }
 .mcc-table thead th { background: var(--mcc-primary-soft); color: var(--mcc-primary-dark); }
-.mcc-table tbody tr:nth-child(even) { background: #f7fafc; }
+.mcc-table tbody tr:nth-child(even) { background: var(--mcc-soft-bg); }
 .mcc-table a { color: var(--mcc-primary); }
 .mcc-table-scroll { overflow-x: auto; }
 
@@ -139,7 +163,7 @@ table.mcc-table { border-collapse: collapse; width: 100%; font-size: 13px; }
   padding: 6px 8px;
   border: 1px solid var(--mcc-border);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--mcc-surface);
   color: var(--mcc-text);
   width: 100%;
 }
@@ -159,7 +183,7 @@ table.mcc-table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .mcc-codewrap pre {
   margin: 0;
   padding: 10px 12px;
-  background: #f3f6fa;
+  background: var(--mcc-code-bg);
   border: 1px solid var(--mcc-border);
   border-radius: 6px;
   overflow-x: auto;
@@ -173,7 +197,7 @@ details.mcc-reveal {
   border: 1px solid var(--mcc-border);
   border-radius: 6px;
   margin-bottom: 8px;
-  background: #fbfdfe;
+  background: var(--mcc-reveal-bg);
 }
 details.mcc-reveal > summary {
   cursor: pointer;
@@ -266,7 +290,7 @@ img { max-width: 100%; height: auto; }
 .mcc-doc hr { border: none; border-top: 1px solid var(--mcc-border); margin: 12px 0; }
 .mcc-doc a { color: var(--mcc-primary); }
 .mcc-body code {
-  background: #f3f6fa;
+  background: var(--mcc-code-bg);
   border: 1px solid var(--mcc-border);
   border-radius: 4px;
   padding: 0 4px;

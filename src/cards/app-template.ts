@@ -2,14 +2,26 @@
 // resource at ui://mcp-chat-cards/card.html with mimeType
 // "text/html;profile=mcp-app". Hosts that support the Apps extension render
 // this template inline in the conversation as a sandboxed iframe, then
-// deliver the tool result to it over JSON-RPC postMessage. The template:
+// deliver the tool result to it over JSON-RPC postMessage.
 //
-// 1. Performs the ui/initialize handshake and sends ui/notifications/initialized.
-// 2. Waits for ui/notifications/tool-result, reads structuredContent.card
-//    ({ articleHtml, config }), injects it, and calls window.mccInit().
-// 3. Installs window.__mccHostBridge so card runtime events map onto Apps
-//    JSON-RPC: prompt -> ui/message, link -> ui/open-link,
-//    notify -> notifications/message (logging).
+// Render-critical behavior (each failing silently on its own):
+// 1. ui/notifications/initialized is sent on a short timeout as well as on
+//    the ui/initialize reply - the host withholds the tool result until it
+//    sees the notification, so gating it on a reply that may never arrive
+//    leaves a mounted card empty forever.
+// 2. The card paints from the result's structuredContent, which only ships
+//    when the tool declares an output schema (see server.ts).
+// 3. ui/notifications/size-changed is reported after every paint and on
+//    resize - content drives the iframe size; without it the card can stay
+//    collapsed and invisible.
+// 4. Message handling is tolerant: method names are substring-matched and
+//    the card payload is located by deep search (any object carrying an
+//    articleHtml string), because hosts nest results differently.
+//
+// Debugging in Claude Desktop: enable Developer Mode, open the webview
+// devtools, and filter the console for "[mcp-chat-cards]". Call
+// window.__mccDebug() in that console for a state snapshot including the
+// recent message log.
 //
 // The bootstrap script avoids backticks and dollar-brace sequences so it can
 // live inside a TypeScript template literal.
@@ -25,20 +37,32 @@ export function buildCardTemplateHtml(serverVersion: string): string {
   "use strict";
 
   var pending = {};
-  var nextId = 1;
-  var initialized = false;
-  var pendingResult = null;
+  var nextId = 0;
+  var announced = false;
+  var painted = false;
+  var traceLog = [];
+
+  function trace(direction, detail) {
+    try {
+      traceLog.push({ at: Date.now(), dir: direction, detail: detail });
+      if (traceLog.length > 50) traceLog.shift();
+      console.log("[mcp-chat-cards] " + direction, detail);
+    } catch (err) { /* console may be unavailable */ }
+  }
 
   function send(message) {
-    try { window.parent.postMessage(message, "*"); } catch (err) { /* no host */ }
+    try {
+      window.parent.postMessage(message, "*");
+      trace("tx", message.method || ("reply:" + message.id));
+    } catch (err) { trace("tx-error", String(err)); }
   }
 
   function request(method, params) {
-    return new Promise(function (resolve, reject) {
-      var id = nextId;
+    return new Promise(function (resolve) {
       nextId += 1;
-      pending[id] = { resolve: resolve, reject: reject };
-      send({ jsonrpc: "2.0", id: id, method: method, params: params || {} });
+      // String keys: a host that echoes id 1 back as "1" must still resolve.
+      pending[String(nextId)] = resolve;
+      send({ jsonrpc: "2.0", id: nextId, method: method, params: params || {} });
     });
   }
 
@@ -69,9 +93,43 @@ export function buildCardTemplateHtml(serverVersion: string): string {
     if (el) el.textContent = text;
   }
 
+  function reportSize() {
+    notify("ui/notifications/size-changed", {
+      width: document.body.scrollWidth,
+      height: document.body.scrollHeight
+    });
+  }
+
+  // hostContext.theme is "light" or "dark"; real design tokens arrive as CSS
+  // custom properties under hostContext.styles.variables.
+  function applyHostContext(context) {
+    if (!context || typeof context !== "object") return;
+    try {
+      var vars = (context.styles && context.styles.variables) || {};
+      var root = document.documentElement;
+      for (var name in vars) {
+        if (typeof vars[name] === "string") root.style.setProperty(name, vars[name]);
+      }
+      if (context.theme === "dark") root.setAttribute("data-theme", "dark");
+      else if (context.theme === "light") root.removeAttribute("data-theme");
+    } catch (err) { trace("theme-error", String(err)); }
+  }
+
+  // Whatever object carries an articleHtml string is the card payload,
+  // wherever the host nested it.
+  function extractCard(node, depth) {
+    if (!node || typeof node !== "object" || (depth || 0) > 6) return null;
+    if (typeof node.articleHtml === "string") return node;
+    for (var key in node) {
+      var found = extractCard(node[key], (depth || 0) + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
   function renderCard(card) {
     var mount = document.getElementById("mcc-root");
-    if (!mount || !card || !card.articleHtml) return;
+    if (!mount || !card || typeof card.articleHtml !== "string") return;
     mount.innerHTML = card.articleHtml;
     var cfgEl = document.getElementById("mcc-config");
     if (!cfgEl) {
@@ -83,58 +141,93 @@ export function buildCardTemplateHtml(serverVersion: string): string {
     cfgEl.textContent = JSON.stringify(card.config || {});
     setStatus("");
     if (typeof window.mccInit === "function") window.mccInit();
+    painted = true;
+    trace("painted", (card.config && card.config.kind) || "card");
+    reportSize();
   }
 
-  function extractCard(result) {
-    if (result && result.structuredContent && result.structuredContent.card) {
-      return result.structuredContent.card;
-    }
-    return null;
-  }
-
-  function handleToolResult(result) {
-    if (!initialized) { pendingResult = result; return; }
-    var card = extractCard(result);
-    if (card) {
-      renderCard(card);
-    } else if (result && result.isError) {
-      setStatus("The tool reported an error; see the conversation for details.");
-    } else {
-      setStatus("This tool result carries no card payload.");
-    }
+  function handlePayload(value) {
+    var card = extractCard(value, 0);
+    if (card) { renderCard(card); return true; }
+    return false;
   }
 
   window.addEventListener("message", function (event) {
     var msg = event.data;
-    if (!msg || msg.jsonrpc !== "2.0") return;
-    if (msg.id !== undefined && msg.method === undefined) {
-      var handler = pending[msg.id];
-      if (handler) {
-        delete pending[msg.id];
-        if (msg.error) handler.reject(msg.error); else handler.resolve(msg.result);
+    if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0") return;
+    trace("rx", msg.method || ("reply:" + msg.id));
+
+    var key = msg.id !== undefined && msg.method === undefined ? String(msg.id) : null;
+    if (key !== null && pending[key]) {
+      var resolve = pending[key];
+      delete pending[key];
+      resolve(msg.error ? null : msg.result);
+      return;
+    }
+
+    var method = typeof msg.method === "string" ? msg.method : "";
+    if (method.indexOf("tool-result") > -1) {
+      if (!handlePayload(msg.params)) {
+        if (msg.params && msg.params.isError) {
+          setStatus("The tool reported an error; see the conversation for details.");
+        } else {
+          setStatus("This tool result carries no card payload.");
+        }
       }
       return;
     }
-    if (msg.method === "ui/notifications/tool-result") {
-      handleToolResult(msg.params);
-    } else if (msg.method === "ui/notifications/tool-cancelled") {
+    if (method.indexOf("tool-cancelled") > -1) {
       setStatus("The tool call was cancelled.");
+      return;
     }
-    // ui/notifications/tool-input and tool-input-partial are ignored; the
-    // card renders from the result, not the arguments.
+    if (/theme|context/i.test(method)) {
+      applyHostContext((msg.params && msg.params.hostContext) || msg.params);
+      return;
+    }
+    // Last resort: some hosts deliver the payload under other notifications.
+    handlePayload(msg.params);
   });
+
+  // The host withholds the tool result until the view announces itself, so
+  // the announcement must never be gated on a reply that may not arrive.
+  function announceReady() {
+    if (announced) return;
+    announced = true;
+    notify("ui/notifications/initialized", {});
+    reportSize();
+  }
 
   request("ui/initialize", {
     protocolVersion: "${APPS_PROTOCOL_VERSION}",
     clientInfo: { name: "mcp-chat-cards", version: "${serverVersion}" },
     appCapabilities: { availableDisplayModes: ["inline"] }
-  }).then(function () {
-    notify("ui/notifications/initialized");
-    initialized = true;
-    if (pendingResult) { handleToolResult(pendingResult); pendingResult = null; }
-  }, function () {
-    setStatus("Host initialization failed; this card cannot render here.");
+  }).then(function (result) {
+    announceReady();
+    if (result) {
+      applyHostContext(result.hostContext);
+      // Some hosts hand the tool result back on the init response itself.
+      handlePayload(result);
+    }
   });
+  setTimeout(announceReady, 600);
+
+  // Keep the reported size accurate as tabs switch and sections open/close.
+  if (typeof ResizeObserver === "function") {
+    try {
+      new ResizeObserver(function () { if (painted) reportSize(); }).observe(document.body);
+    } catch (err) { /* optional */ }
+  }
+
+  // Devtools inspector: window.__mccDebug() in the webview console.
+  window.__mccDebug = function () {
+    return {
+      version: "${serverVersion}",
+      announced: announced,
+      painted: painted,
+      cardHtml: (document.getElementById("mcc-root") || {}).innerHTML || "",
+      log: traceLog.slice()
+    };
+  };
 })();`;
 
   return `<!DOCTYPE html>

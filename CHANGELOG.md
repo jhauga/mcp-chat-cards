@@ -42,6 +42,28 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     count, per-file size, and total size; build caches and binaries skipped.
   - Optional `MCP_CHAT_CARDS_FS_ROOT` environment variable to confine all local file
     access to one directory.
+- Automatic multi-part splitting so hosts never truncate oversized card results:
+  - Documents split at H2 boundaries and code tours split at file boundaries when they
+    exceed the card size budget (default ~32,000 characters of card markup, tunable via
+    `MCP_CHAT_CARDS_CARD_BUDGET`); oversized single files are truncated with a notice.
+  - Both bulk tools accept a `part` parameter and each result names the next part to
+    request, so every part renders as its own card.
+  - Clients that declare the MCP Apps extension capability receive card results without
+    the embedded HTML fallback resource, halving payload size on Apps hosts.
+- Render-reliability hardening of the Apps template (modeled on a known-good SEP-1865
+  reference implementation):
+  - Every card tool declares an output schema, so hosts ship `structuredContent` instead
+    of dropping it and leaving the card nothing to paint.
+  - `ui/notifications/initialized` fires on a timeout as well as on the handshake reply,
+    so a host that never answers `ui/initialize` cannot leave a mounted card empty.
+  - The card payload is located by deep search (any object with `articleHtml`) and
+    method names are matched by substring, tolerating host nesting and naming variance.
+  - `ui/notifications/size-changed` is reported after every paint and on resize so the
+    inline iframe takes its content height.
+  - The template adopts the host theme: applies `hostContext.styles.variables` and a
+    full dark palette when the host reports `theme: "dark"`.
+  - Console tracing (`[mcp-chat-cards]` prefix) plus a `window.__mccDebug()` inspector
+    for Claude Desktop's webview developer tools.
 - Reference tools: `fetch_reference` (structured page extraction: headings, text, tables,
   images, links, form specs), `mirror_web_form` (rebuild a website form as a card), and
   `submit_web_form` (submit user-confirmed values to the real form).

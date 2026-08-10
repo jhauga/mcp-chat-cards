@@ -22,10 +22,21 @@ describe("MCP Apps card template", () => {
     expect(html).toContain("0.0.0-test");
   });
 
-  it("handles tool result and cancellation notifications", () => {
-    expect(html).toContain("ui/notifications/tool-result");
-    expect(html).toContain("ui/notifications/tool-cancelled");
-    expect(html).toContain("structuredContent.card");
+  it("handles tool result and cancellation notifications tolerantly", () => {
+    expect(html).toContain("tool-result");
+    expect(html).toContain("tool-cancelled");
+    expect(html).toContain("articleHtml");
+  });
+
+  it("never gates the initialized announcement on the init reply", () => {
+    expect(html).toContain("setTimeout(announceReady");
+  });
+
+  it("reports its size and exposes the devtools inspector", () => {
+    expect(html).toContain("ui/notifications/size-changed");
+    expect(html).toContain("ResizeObserver");
+    expect(html).toContain("__mccDebug");
+    expect(html).toContain("[mcp-chat-cards]");
   });
 
   it("bridges card events to Apps JSON-RPC methods", () => {

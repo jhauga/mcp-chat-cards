@@ -102,6 +102,34 @@ describe("MCP Apps integration", () => {
   });
 });
 
+describe("capability-aware results", () => {
+  it("omits the embedded html fallback for clients declaring Apps support", async () => {
+    const [appsClientTransport, appsServerTransport] = InMemoryTransport.createLinkedPair();
+    await createServer().connect(appsServerTransport);
+    const appsClient = new Client(
+      { name: "apps-client", version: "0.0.0" },
+      {
+        capabilities: {
+          extensions: {
+            "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
+          },
+        } as Record<string, unknown>,
+      },
+    );
+    await appsClient.connect(appsClientTransport);
+
+    const result = await appsClient.callTool({
+      name: "create_table_card",
+      arguments: { title: "Compact", headers: ["A"], rows: [["1"]] },
+    });
+    const content = result.content as ContentBlock[];
+    expect(content.some((block) => block.type === "resource")).toBe(false);
+    const structured = result.structuredContent as CardStructuredContent;
+    expect(structured.card.articleHtml).toContain("mcc-card");
+    await appsClient.close();
+  });
+});
+
 describe("card tool calls", () => {
   it("returns a ui:// html resource for a table card", async () => {
     const result = await client.callTool({

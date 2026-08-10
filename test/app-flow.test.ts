@@ -96,4 +96,44 @@ describe("MCP Apps template flow", () => {
     const content = message?.params?.content as { type: string; text: string };
     expect(content.text).toBe("Teach ownership in Rust simply.");
   });
+
+  it("reports its size after painting", () => {
+    expect(received.some((msg) => msg.method === "ui/notifications/size-changed")).toBe(true);
+  });
+});
+
+describe("MCP Apps template resilience", () => {
+  it("announces and renders even when the host never answers ui/initialize", async () => {
+    const dom = new JSDOM(buildCardTemplateHtml("0.0.0-test"), {
+      runScripts: "dangerously",
+      url: "https://cards.invalid/",
+      pretendToBeVisual: true,
+    });
+    const win = dom.window;
+    const seen: RpcMessage[] = [];
+    win.addEventListener("message", (event: MessageEvent) => {
+      const msg = event.data as RpcMessage;
+      if (msg?.jsonrpc === "2.0" && msg.method !== undefined) seen.push(msg);
+    });
+
+    // Deliver the tool result immediately, with the payload nested one level
+    // deeper than the spec shape - the template must still find and paint it.
+    const card = buildFormCard({ title: "Early bird", fields: [{ name: "note" }] });
+    win.postMessage(
+      {
+        jsonrpc: "2.0",
+        method: "ui/notifications/tool-result",
+        params: {
+          result: { structuredContent: { card: { articleHtml: card.articleHtml, config: card.config } } },
+        },
+      },
+      "*",
+    );
+    await tick();
+    expect(win.document.querySelector(".mcc-card")).not.toBeNull();
+
+    // The timeout-based announcement must fire without any init reply.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(seen.some((msg) => msg.method === "ui/notifications/initialized")).toBe(true);
+  });
 });

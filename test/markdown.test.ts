@@ -85,15 +85,16 @@ describe("buildCodeTourCard", () => {
     expect(readmeIndex).toBeGreaterThan(-1);
     expect(mainIndex).toBeGreaterThan(readmeIndex);
     expect(card.html).toContain('class="language-rust"');
-    expect(card.summary).toContain("3 file tab(s)");
+    expect(card.summary).toContain("README.md, Cargo.toml, src/main.rs");
   });
 
-  it("caps tabs and reports omissions", () => {
+  it("splits into parts when the tab cap is exceeded", () => {
     const files = Array.from({ length: 5 }, (_, i) => ({
       path: `src/file${i}.rs`,
       content: `// file ${i}`,
     }));
     const card = buildCodeTourCard({ title: "Big tour", files, maxTabs: 3 });
-    expect(card.summary).toContain("2 more file(s) omitted");
+    expect(card.summary).toContain("part 1 of 2");
+    expect(card.summary).toContain("call create_code_tour_card again with part: 2");
   });
 });

@@ -40,7 +40,12 @@ Files you generated earlier in the conversation plug straight into cards: pass a
 file path (or content) to create_markdown_card to render a guide as one interactive card,
 and pass a project zip path to create_code_tour_card to render its source as file tabs.
 Use unpack_archive or read_local_file first when you need to inspect the contents before
-deciding which cards to build.`;
+deciding which cards to build.
+
+Large content is split automatically into multi-part cards so results stay small enough
+for hosts to render. When a card result says more parts remain, immediately call the same
+tool again with the indicated part number (keeping the other arguments identical) until
+every part has rendered as its own card.`;
 
 // Shared zod fragments -------------------------------------------------
 
@@ -71,34 +76,21 @@ const listItemSchema: z.ZodType<ListItem> = z.lazy(() =>
 // supporting hosts display the result inline in the conversation.
 const CARD_UI_META = { ui: { resourceUri: CARD_TEMPLATE_URI } };
 
-// Tool result helpers --------------------------------------------------
-
-function cardResult(card: RenderedCard): CallToolResult {
-  return {
-    content: [
-      {
-        type: "text",
-        text:
-          `${card.summary}\n` +
-          "The card renders inline via the MCP Apps template on supporting hosts; " +
-          "it is also attached as an embedded HTML resource " +
-          `(ui://mcp-chat-cards/${card.id}) as a fallback.`,
-      },
-      {
-        type: "resource",
-        resource: {
-          uri: `ui://mcp-chat-cards/${card.id}`,
-          mimeType: "text/html",
-          text: card.html,
-        },
-      },
-    ],
-    // Consumed by the MCP Apps card template (see app-template.ts).
-    structuredContent: {
-      card: { articleHtml: card.articleHtml, config: card.config },
-    },
-  };
-}
+// Declared on every card tool. Without an output schema hosts treat the
+// result as text-only and drop structuredContent - and structuredContent is
+// the only thing the Apps template can paint from.
+const CARD_OUTPUT_SCHEMA = {
+  card: z.object({
+    articleHtml: z.string().describe("Card markup rendered inline by the Apps template"),
+    config: z.object({
+      id: z.string(),
+      kind: z.string(),
+      dwellMs: z.number(),
+      contextActions: z.array(z.object({ label: z.string(), prompt: z.string() })),
+      draggable: z.boolean(),
+    }),
+  }),
+};
 
 function errorResult(error: unknown): CallToolResult {
   const message = error instanceof Error ? error.message : String(error);
@@ -110,6 +102,49 @@ export function createServer(): McpServer {
     { name: "mcp-chat-cards", version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS },
   );
+
+  // Hosts that declared the MCP Apps extension render cards from
+  // structuredContent via the template, so the bulky embedded-resource
+  // fallback would only double the payload for them.
+  const clientSupportsApps = (): boolean => {
+    const capabilities = server.server.getClientCapabilities() as
+      | { extensions?: Record<string, unknown> }
+      | undefined;
+    return Boolean(capabilities?.extensions?.["io.modelcontextprotocol/ui"]);
+  };
+
+  const cardResult = (card: RenderedCard): CallToolResult => {
+    const appsHost = clientSupportsApps();
+    const content: CallToolResult["content"] = [
+      {
+        type: "text",
+        text:
+          `${card.summary}\n` +
+          (appsHost
+            ? "The card renders inline via the MCP Apps template."
+            : "The card renders inline via the MCP Apps template on supporting hosts; " +
+              "it is also attached as an embedded HTML resource " +
+              `(ui://mcp-chat-cards/${card.id}) as a fallback.`),
+      },
+    ];
+    if (!appsHost) {
+      content.push({
+        type: "resource",
+        resource: {
+          uri: `ui://mcp-chat-cards/${card.id}`,
+          mimeType: "text/html",
+          text: card.html,
+        },
+      });
+    }
+    return {
+      content,
+      // Consumed by the MCP Apps card template (see app-template.ts).
+      structuredContent: {
+        card: { articleHtml: card.articleHtml, config: card.config },
+      },
+    };
+  };
 
   // Pre-declared MCP Apps UI template (SEP-1865). Hosts supporting the Apps
   // extension read this once and render it inline for every linked tool call.
@@ -139,6 +174,7 @@ export function createServer(): McpServer {
     {
       title: "Create tab card",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render an interactive card with tabs, each showing a different context of the same subject " +
         "(for example one tab per programming language, OS, or skill level). Tab content can be " +
@@ -175,6 +211,7 @@ export function createServer(): McpServer {
     {
       title: "Create table card",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render an HTML table card from explicit rows, or convert loosely delimited text into a " +
         "balanced table (delimiter auto-detected; newlines can mark cells). URL cells become links.",
@@ -209,6 +246,7 @@ export function createServer(): McpServer {
     {
       title: "Create form card",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a form card the user fills in to give the conversation context and direction. " +
         "Submitting sends the values back to the chat as the next prompt (optionally shaped by " +
@@ -257,6 +295,7 @@ export function createServer(): McpServer {
     {
       title: "Create chart card",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a dynamically generated SVG chart card (bar, line, pie, or donut) with a legend and " +
         "a collapsible data table. Use for useful graphics summarizing referenced data.",
@@ -299,6 +338,7 @@ export function createServer(): McpServer {
     {
       title: "Create video card",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a card with an HTML video player for a short clip. src must be a direct http(s) " +
         "URL to a video file (mp4/webm), not a streaming platform page.",
@@ -327,6 +367,7 @@ export function createServer(): McpServer {
     {
       title: "Create show/hide card",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a card of collapsible show/hide sections with show-all/hide-all buttons. Good for " +
         "step-by-step guides, FAQs, spoilers, and long reference material.",
@@ -361,6 +402,7 @@ export function createServer(): McpServer {
     {
       title: "Create sequential list card",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a nested ordered list card with hierarchical numbering (1., 1.1., 1.1.1.). Good for " +
         "procedures, outlines, and curricula.",
@@ -387,6 +429,7 @@ export function createServer(): McpServer {
     {
       title: "Create document card from markdown",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a markdown document as one interactive card: tables become card tables, fenced " +
         "code gets copy buttons, and H2 sections fold into show/hide reveals. Pass either the " +
@@ -399,6 +442,15 @@ export function createServer(): McpServer {
         subtitle: z.string().optional(),
         splitSections: z.boolean().optional().describe("Fold H2 sections into reveals (default true)"),
         openFirst: z.boolean().optional().describe("Open the first section initially (default true)"),
+        part: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "Part number for large documents (1-based). Long documents split automatically; " +
+              "when the result says more parts remain, call again with the next part.",
+          ),
         tutorTerms: tutorTermsSchema,
         contextActions: contextActionsSchema,
       },
@@ -432,6 +484,7 @@ export function createServer(): McpServer {
     {
       title: "Create code tour card",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a project's source as an interactive card with one tab per file (code with copy " +
         "buttons, ordered README, manifest, then src). Pass the path of a zip archive generated " +
@@ -456,6 +509,15 @@ export function createServer(): McpServer {
           .optional()
           .describe("With archivePath: only include entries whose path contains one of these"),
         maxTabs: z.number().int().min(1).max(24).optional(),
+        part: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "Part number for large projects (1-based). Big tours split automatically; " +
+              "when the result says more parts remain, call again with the next part.",
+          ),
         tutorTerms: tutorTermsSchema,
         contextActions: contextActionsSchema,
       },
@@ -607,6 +669,7 @@ export function createServer(): McpServer {
     {
       title: "Mirror a website form",
       _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Fetch a public web page, extract one of its forms, and render it as an interactive card in " +
         "the conversation. When the user submits the card, the values return to the chat as a " +

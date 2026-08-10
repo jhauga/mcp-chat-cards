@@ -31,6 +31,9 @@ receive each card as a self-contained embedded HTML resource.
 - **Model-generated file ingestion**: read local text files and unpack zip archives the
   model produced earlier in the conversation, so its own deliverables plug straight into
   cards without retyping anything.
+- **Automatic multi-part splitting**: large documents and projects are packed into parts
+  that each stay under a card size budget, so hosts never truncate an oversized result.
+  Each part renders as its own card and the result says exactly how to fetch the next.
 - **Reference fetching**: `fetch_reference` pulls a public page and returns structured
   data (headings, text, tables, images, links, form specs) ready to feed into card tools.
 - **Card tutor**: educational cards can mark terms that show tooltips after a hover dwell,
@@ -156,6 +159,14 @@ button. Build caches (`target/`, `node_modules/`) and binary entries are skipped
 automatically. Use `unpack_archive` or `read_local_file` first when the model needs to
 inspect contents before deciding which cards to build.
 
+When a document or project exceeds the card size budget (default about 32,000 characters
+of card markup, tunable via `MCP_CHAT_CARDS_CARD_BUDGET`), the tool splits it at natural
+boundaries - H2 sections for documents, whole files for tours - and returns part 1 with
+an instruction like "call create_code_tour_card again with part: 2". The model repeats
+the call until every part has rendered as its own card, and oversized single files are
+truncated with a visible notice. This keeps each tool result small enough for hosts to
+render instead of truncating.
+
 ### Example: mirrored website form
 
 1. `mirror_web_form` with `{ "url": "https://example.com/newsletter" }` renders the page's
@@ -171,19 +182,27 @@ The server supports two delivery paths, negotiated automatically by the host:
 **Inline in the conversation (MCP Apps, SEP-1865).** The server pre-declares one UI
 template resource at `ui://mcp-chat-cards/card.html` with MIME type
 `text/html;profile=mcp-app`, and every card tool links to it through
-`_meta.ui.resourceUri`. Hosts that support the Apps extension (recent Claude Desktop
-builds among them) render the template inline in the chat as a sandboxed iframe, complete
-the `ui/initialize` handshake, and deliver the tool result to it. The template reads the
-card markup from the result's `structuredContent.card` and renders it in place. Card
-interactions travel back over JSON-RPC postMessage: form submissions and context actions
-become `ui/message` requests (the next conversation prompt), links go through
-`ui/open-link`, and telemetry uses logging notifications.
+`_meta.ui.resourceUri` and declares an output schema (hosts drop `structuredContent`
+from schema-less tools, leaving the card nothing to paint). Hosts that support the Apps
+extension (recent Claude Desktop builds among them) render the template inline in the
+chat as a sandboxed iframe, complete the `ui/initialize` handshake, and deliver the tool
+result to it. The template is defensive about the parts that fail silently: it announces
+`ui/notifications/initialized` on a timeout as well as on the handshake reply (the host
+withholds the tool result until it sees the announcement), locates the card payload by
+deep search rather than one fixed nesting, reports `ui/notifications/size-changed` after
+every paint and on resize so the iframe takes its real height, and adopts the host's
+theme (including a full dark palette). Card interactions travel back over JSON-RPC
+postMessage: form submissions and context actions become `ui/message` requests (the next
+conversation prompt), links go through `ui/open-link`, and telemetry uses logging
+notifications.
 
-**Embedded resource fallback.** The same tool results also carry the full card as a
-self-contained HTML document (inline CSS and JS, restrictive Content-Security-Policy, no
-external scripts) in an embedded resource block with a `ui://mcp-chat-cards/<id>` URI.
-Hosts without Apps support but with MCP-UI style rendering show that document in a
-sandboxed panel; there the card posts MCP-UI style messages (`prompt`, `notify`, `link`).
+**Embedded resource fallback.** For clients that did not declare the Apps extension,
+the same tool results also carry the full card as a self-contained HTML document (inline
+CSS and JS, restrictive Content-Security-Policy, no external scripts) in an embedded
+resource block with a `ui://mcp-chat-cards/<id>` URI. Hosts without Apps support but
+with MCP-UI style rendering show that document in a sandboxed panel; there the card
+posts MCP-UI style messages (`prompt`, `notify`, `link`). Clients that declared the Apps
+extension capability skip this block, halving the payload of every card result.
 
 Hosts without any iframe rendering still receive the HTML and can save it to a file or
 show it as text; the "Copy card" button and the form prompt fallback keep the features
@@ -216,6 +235,20 @@ usable everywhere.
 - Cards ship a restrictive CSP and load no external scripts, stylesheets, or fonts.
 - `submit_web_form` should only be called with values the user entered in a mirrored form
   card or explicitly confirmed.
+
+## Debugging cards in Claude Desktop
+
+If a card mounts but stays empty, the failure is usually silent, so the template traces
+everything to the console:
+
+1. Enable Developer Mode in Claude Desktop (Settings, Developer), then open the webview
+   developer tools for the conversation.
+2. Filter the console for `[mcp-chat-cards]`. Every JSON-RPC message the card sends and
+   receives is logged with its direction (`tx`/`rx`), so a missing handshake reply or an
+   undelivered tool result is visible immediately.
+3. Run `window.__mccDebug()` in that console for a snapshot: template version, whether
+   `initialized` was announced, whether a card painted, the rendered card HTML, and the
+   last 50 protocol messages. Paste its output when reporting a rendering issue.
 
 ## Development
 
