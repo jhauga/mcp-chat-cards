@@ -15,6 +15,7 @@ export interface TabCardOptions {
   subtitle?: string;
   tabs: TabSpec[];
   tutorTerms?: TutorTerm[];
+  tutorTermsInCode?: boolean;
   contextActions?: ContextAction[];
 }
 
@@ -66,6 +67,7 @@ ${panels}
     kind: "tabs",
     body,
     tutorTerms: options.tutorTerms,
+    tutorTermsInCode: options.tutorTermsInCode,
     contextActions: options.contextActions,
   });
   const labels = options.tabs.map((tab) => tab.label).join(", ");

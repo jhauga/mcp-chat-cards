@@ -228,8 +228,38 @@ ol.mcc-seq ol.mcc-seq { padding-left: 22px; }
 ul.mcc-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0; margin: 8px 0 0; font-size: 12px; }
 ul.mcc-legend .mcc-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
 
-/* Video */
-.mcc-video video { width: 100%; max-height: 360px; border-radius: 6px; background: #1f2328; }
+/* Video. The frame reserves a 16:9 box before metadata arrives, and the
+   player fills it, so a clip that is still buffering (or blocked outright)
+   never collapses the card to an invisible zero-height element. */
+.mcc-video-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 360px;
+  min-height: 160px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1f2328;
+}
+.mcc-video video, .mcc-video-frame video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  max-height: 360px;
+  border-radius: 6px;
+  background: #1f2328;
+  object-fit: contain;
+}
+.mcc-video-fallback { margin: 6px 0 0; font-size: 12px; }
+.mcc-video-note {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--mcc-border);
+  border-radius: 6px;
+  color: var(--mcc-muted);
+  font-size: 12px;
+}
 
 /* Animation cards: 16:9 stage of stacked scenes played by the runtime */
 .mcc-motion .mcc-stage {

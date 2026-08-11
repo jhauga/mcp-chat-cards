@@ -405,6 +405,49 @@ export const CARD_RUNTIME_JS = `(function () {
     }
   }
 
+  // ---- Video ----------------------------------------------------------
+  // Card markup is injected with innerHTML by whichever shell is hosting the
+  // runtime, and some hosts run their own allowlist over it first. If the
+  // <video> element did not survive that, the block would render as an empty
+  // gap; say so instead, and keep the direct link reachable. When the element
+  // is intact, autoplay is retried explicitly because an injected element does
+  // not always get the same gesture treatment as one present at parse time.
+  function initVideo(cfg) {
+    var blocks = document.querySelectorAll(".mcc-video");
+    for (var i = 0; i < blocks.length; i++) {
+      (function (block) {
+        // A distinct flag from initDrag's: .mcc-video is also a .mcc-block,
+        // and sharing data-mcc-wired would let whichever ran first cancel
+        // the other.
+        if (block.getAttribute("data-mcc-video-wired") === "1") return;
+        block.setAttribute("data-mcc-video-wired", "1");
+        var video = block.querySelector("video");
+        if (!video) {
+          var note = document.createElement("p");
+          note.className = "mcc-video-note";
+          note.textContent = "This client removed the embedded video player. Use the link below to open the clip.";
+          block.appendChild(note);
+          post("notify", { message: cardTag(cfg) + ":video-stripped" });
+          return;
+        }
+        video.addEventListener("error", function () {
+          post("notify", { message: cardTag(cfg) + ":video-error" });
+        });
+        video.addEventListener("loadedmetadata", function () {
+          post("notify", { message: cardTag(cfg) + ":video-ready" });
+        });
+        if (video.hasAttribute("autoplay") && typeof video.play === "function") {
+          try {
+            var started = video.play();
+            if (started && typeof started.catch === "function") {
+              started.catch(function () { /* blocked until the user interacts */ });
+            }
+          } catch (err) { /* older webviews reject play() synchronously */ }
+        }
+      })(blocks[i]);
+    }
+  }
+
   // ---- Tutor: dwell tooltips -----------------------------------------
   // Hovering a marked term longer than dwellMs shows its tip, promotes the
   // tip to a title attribute, and notifies the host so the model can react.
@@ -705,6 +748,7 @@ export const CARD_RUNTIME_JS = `(function () {
     wireDocument();
     initTabs();
     initMotion(cfg);
+    initVideo(cfg);
     initDrag(cfg);
     initForms(cfg);
     initTutor(cfg);

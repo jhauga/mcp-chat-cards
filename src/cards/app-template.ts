@@ -27,6 +27,7 @@
 // live inside a TypeScript template literal.
 import { CARD_THEME_CSS } from "./theme.js";
 import { CARD_RUNTIME_JS } from "./runtime.js";
+import { CARD_TEMPLATE_CSP } from "./shell.js";
 
 export const CARD_TEMPLATE_URI = "ui://mcp-chat-cards/card.html";
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
@@ -211,6 +212,12 @@ export function buildCardTemplateHtml(serverVersion: string): string {
   });
   setTimeout(announceReady, 600);
 
+  // Media events do not bubble, so the capture phase is the only way to see
+  // them from the document. A <video> is 300x150 until its metadata lands;
+  // without this the frame keeps the placeholder height it was measured at.
+  document.addEventListener("loadedmetadata", function () { if (painted) reportSize(); }, true);
+  document.addEventListener("error", function () { if (painted) reportSize(); }, true);
+
   // Keep the reported size accurate as tabs switch and sections open/close.
   if (typeof ResizeObserver === "function") {
     try {
@@ -235,6 +242,7 @@ export function buildCardTemplateHtml(serverVersion: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="${CARD_TEMPLATE_CSP}">
 <title>mcp-chat-cards</title>
 <style>${CARD_THEME_CSS}
 #mcc-app-status { color: var(--mcc-muted); font-size: 12px; padding: 6px 2px; }

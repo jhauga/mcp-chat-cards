@@ -98,7 +98,7 @@ for hosts that support MCP UI resources, cards render as sandboxed iframes.
 | `create_table_card` | HTML table from rows or raw text with delimiter detection |
 | `create_chart_card` | SVG bar, line, pie, or donut chart with data table |
 | `create_form_card` | Form whose submission becomes the next conversation prompt |
-| `create_video_card` | HTML video player for a short clip (direct file URL) |
+| `create_video_card` | HTML video player for a short clip (direct file URL, `data:video/*`, or `blob:`) |
 | `create_reveal_card` | Collapsible show/hide sections |
 | `create_list_card` | Nested sequential outline (1., 1.1., 1.1.1.) |
 | `create_markdown_card` | Render a markdown document (content or file path) as one card |
@@ -176,8 +176,16 @@ of card markup, tunable via `MCP_CHAT_CARDS_CARD_BUDGET`), the tool splits it at
 boundaries - H2 sections for documents, whole files for tours - and returns part 1 with
 an instruction like "call create_code_tour_card again with part: 2". The model repeats
 the call until every part has rendered as its own card, and oversized single files are
-truncated with a visible notice. This keeps each tool result small enough for hosts to
-render instead of truncating.
+truncated with a visible notice.
+
+The budget is measured against what a file costs **after** rendering, not its length on
+disk: source is HTML-escaped into the tab panel, where a single `<` becomes four
+characters, so a handful of markup-dense files can cost far more than their raw size
+suggests. Every finished result is then measured once more against the host's ceiling
+(about 40,000 characters of serialized result, tunable via
+`MCP_CHAT_CARDS_RESULT_LIMIT`). A card that is still too large and cannot split itself -
+a table with thousands of rows, say - returns an actionable error naming the overage
+instead of an oversized result that the host would silently refuse to render.
 
 ### Example: mirrored website form
 
@@ -208,17 +216,53 @@ postMessage: form submissions and context actions become `ui/message` requests (
 conversation prompt), links go through `ui/open-link`, and telemetry uses logging
 notifications.
 
-**Embedded resource fallback.** For clients that did not declare the Apps extension,
-the same tool results also carry the full card as a self-contained HTML document (inline
-CSS and JS, restrictive Content-Security-Policy, no external scripts) in an embedded
-resource block with a `ui://mcp-chat-cards/<id>` URI. Hosts without Apps support but
-with MCP-UI style rendering show that document in a sandboxed panel; there the card
-posts MCP-UI style messages (`prompt`, `notify`, `link`). Clients that declared the Apps
-extension capability skip this block, halving the payload of every card result.
+**Standalone document fallback.** For clients that did not declare the Apps extension,
+each result carries a link to `ui://mcp-chat-cards/html/<card-id>`. Reading that resource
+returns the same card as a self-contained HTML document (inline CSS and JS, restrictive
+Content-Security-Policy, no external scripts). Hosts without Apps support but with MCP-UI
+style rendering show that document in a sandboxed panel; there the card posts MCP-UI
+style messages (`prompt`, `notify`, `link`).
 
-Hosts without any iframe rendering still receive the HTML and can save it to a file or
-show it as text; the "Copy card" button and the form prompt fallback keep the features
-usable everywhere.
+The document is deliberately **not** inlined in the tool result. Its theme and runtime are
+byte-for-byte identical in every card, so inlining repeated about 16 KB of boilerplate per
+call: it crowded out the caller's context and was the main reason an otherwise ordinary
+card could exceed a host's result ceiling and render nothing at all. Set
+`MCP_CHAT_CARDS_EMBED_HTML=1` to restore the inline copy for a host that cannot follow a
+resource link. The server keeps the last 24 rendered cards available for reading.
+
+### Consistent result shape
+
+Every card tool returns the same three things, whatever the card kind:
+
+| Part | Contents |
+| --- | --- |
+| `content[0]` | Text summary of the card, meaningful on its own |
+| `content[1]` | Resource link to the standalone HTML (omitted for Apps hosts) |
+| `structuredContent` | `{ "card": { "articleHtml": "…", "config": { "id", "kind", … } } }` |
+
+### Rendering surface
+
+Cards render inline in the Claude desktop app sidebar. Other surfaces (mobile and web)
+receive the text summary and the structured payload but do not paint the card, so each
+summary is written to stand alone and tools are instructed to state a card's conclusion in
+the conversation as well.
+
+### Text fields are plain text
+
+Every text field a tool accepts - titles, labels, cell values, tutor tips - is plain text
+and is escaped by the server. Callers must not pre-escape: pass `Predict, Spot & Fix`, not
+`Predict, Spot &amp; Fix`. As a safety net the escaper leaves a well-formed character
+reference alone rather than turning `&amp;` into `&amp;amp;`, so a pre-escaped string still
+displays correctly; `<`, `>`, `"`, and `'` are always escaped regardless.
+
+### Where paths resolve
+
+`create_markdown_card(path)`, `create_code_tour_card(archivePath)`, `read_local_file`, and
+`unpack_archive` all resolve paths on **the filesystem of the machine running this server**.
+When the server is reached over a remote bridge, that is not the caller's sandbox: a file
+the model generated on its own side does not exist here. Pass the content inline
+(`markdown`, `files`) in that case. Set `MCP_CHAT_CARDS_FS_ROOT` to confine local reads to
+one directory.
 
 ## Interactivity notes and limits
 
@@ -228,7 +272,10 @@ usable everywhere.
 - "Copy card" copies the standalone HTML document so a card can be reproduced in another
   response, a file, or a browser tab.
 - Tutor tooltips appear after hovering a marked term for about 1.2 seconds; the card also
-  notifies the host so the model can follow up while the user explores.
+  notifies the host so the model can follow up while the user explores. Each term is
+  marked once per card (longest term wins where two overlap), duplicates in the term list
+  are ignored, and marking never happens inside code samples, native tooltips, or another
+  term's tip. Pass `tutorTermsInCode: true` to `create_code_tour_card` to opt code in.
 - Right-click context actions are defined by the model per card; `{{selection}}` in an
   action prompt is replaced with the user's selected text.
 

@@ -4,7 +4,7 @@ import { buildTabCard } from "../src/cards/tabs.js";
 import { buildTableCard } from "../src/cards/table.js";
 import { buildFormCard } from "../src/cards/form.js";
 import { buildChartCard } from "../src/cards/chart.js";
-import { buildVideoCard } from "../src/cards/video.js";
+import { buildVideoCard, MAX_INLINE_MEDIA_CHARS } from "../src/cards/video.js";
 import { buildRevealCard } from "../src/cards/reveal.js";
 import { buildMotionCard } from "../src/cards/motion.js";
 import { buildListCard } from "../src/cards/list.js";
@@ -225,18 +225,75 @@ describe("buildChartCard", () => {
 });
 
 describe("buildVideoCard", () => {
+  const TINY_MP4 = "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28y";
+
   it("renders a video tag with controls", () => {
     const card = buildVideoCard({
       title: "Clip",
       src: "https://example.com/clip.mp4",
       poster: "https://example.com/poster.jpg",
     });
-    expect(card.html).toContain("<video controls");
+    expect(card.html).toContain("<video class=\"mcc-video-player\" controls");
     expect(card.html).toContain('poster="https://example.com/poster.jpg"');
   });
 
-  it("rejects non-http sources", () => {
-    expect(() => buildVideoCard({ title: "Bad", src: "file:///c:/x.mp4" })).toThrow();
+  it("carries the source as both an attribute and a <source> child", () => {
+    const card = buildVideoCard({ title: "Clip", src: "https://example.com/clip.mp4" });
+    expect(card.articleHtml).toContain('src="https://example.com/clip.mp4"');
+    expect(card.articleHtml).toContain('<source src="https://example.com/clip.mp4" type="video/mp4">');
+  });
+
+  it("reserves layout with a frame and offers a direct link", () => {
+    const card = buildVideoCard({ title: "Clip", src: "https://example.com/clip.webm" });
+    expect(card.articleHtml).toContain('<div class="mcc-video-frame">');
+    expect(card.articleHtml).toContain('type="video/webm"');
+    expect(card.articleHtml).toContain('class="mcc-video-fallback"');
+  });
+
+  it("accepts a data:video source and does not repeat it in a link", () => {
+    const card = buildVideoCard({ title: "Inline", src: TINY_MP4 });
+    expect(card.articleHtml).toContain(`src="${TINY_MP4}"`);
+    expect(card.articleHtml).toContain('type="video/mp4"');
+    expect(card.articleHtml).not.toContain("mcc-video-fallback");
+    expect(card.summary).toContain("an inline clip");
+  });
+
+  it("accepts a blob: source and a data:image poster", () => {
+    const card = buildVideoCard({
+      title: "Blob",
+      src: "blob:https://example.com/8f1c-4a2b",
+      poster: "data:image/png;base64,iVBORw0KGgo=",
+    });
+    expect(card.articleHtml).toContain('src="blob:https://example.com/8f1c-4a2b"');
+    expect(card.articleHtml).toContain('poster="data:image/png;base64,iVBORw0KGgo="');
+  });
+
+  it("autoplay implies muted, since clients ignore unmuted autoplay", () => {
+    const card = buildVideoCard({ title: "Loop", src: "https://example.com/clip.mp4", autoplay: true });
+    expect(card.articleHtml).toContain(" muted");
+    expect(card.articleHtml).toContain(" autoplay");
+  });
+
+  it("rejects sources no client could play", () => {
+    expect(() => buildVideoCard({ title: "Bad", src: "file:///c:/x.mp4" })).toThrow(
+      /data:video/,
+    );
+    expect(() => buildVideoCard({ title: "Bad", src: "data:text/html;base64,PHNjcmlwdD4=" })).toThrow();
+    expect(() => buildVideoCard({ title: "Bad", src: "javascript:alert(1)" })).toThrow();
+  });
+
+  it("rejects inline media past the payload cap", () => {
+    const huge = `data:video/mp4;base64,${"A".repeat(MAX_INLINE_MEDIA_CHARS)}`;
+    expect(() => buildVideoCard({ title: "Huge", src: huge })).toThrow(/character limit/);
+  });
+
+  it("drops a poster that is neither an image nor a URL the CSP allows", () => {
+    const card = buildVideoCard({
+      title: "Clip",
+      src: "https://example.com/clip.mp4",
+      poster: "javascript:alert(1)",
+    });
+    expect(card.articleHtml).not.toContain("poster=");
   });
 });
 

@@ -8,7 +8,19 @@ import { createServer } from "../src/server.js";
 interface ContentBlock {
   type: string;
   text?: string;
+  uri?: string;
+  mimeType?: string;
   resource?: { uri: string; mimeType?: string; text?: string };
+}
+
+// Non-Apps hosts get a link to the standalone document rather than ~16KB of
+// theme and runtime inlined in every result; this is how they fetch it.
+async function readCardHtml(result: { content: unknown }): Promise<string> {
+  const content = result.content as ContentBlock[];
+  const link = content.find((block) => block.type === "resource_link");
+  expect(link?.uri).toMatch(/^ui:\/\/mcp-chat-cards\/html\//);
+  const read = await client.readResource({ uri: link?.uri as string });
+  return (read.contents[0] as { text?: string }).text ?? "";
 }
 
 interface CardStructuredContent {
@@ -181,6 +193,115 @@ describe("capability-aware results", () => {
   });
 });
 
+describe("result size", () => {
+  it("does not inline the standalone document in a card result", async () => {
+    const result = await client.callTool({
+      name: "create_table_card",
+      arguments: { title: "Compact", headers: ["A"], rows: [["1"]] },
+    });
+    const serialized = JSON.stringify(result.content);
+    // The theme and runtime are byte-for-byte identical in every card; the
+    // whole point of the link is that they no longer ride along.
+    expect(serialized).not.toContain("<!DOCTYPE html>");
+    expect(serialized).not.toContain("mccInit");
+    expect(serialized.length).toBeLessThan(2000);
+  });
+
+  it("splits a multi-file code tour instead of emitting an oversized result", async () => {
+    // Five files that individually render fine but together exceeded the
+    // host's ceiling as one card.
+    const files = Array.from({ length: 5 }, (_, i) => ({
+      path: `src/mod${i}.rs`,
+      content: `// module ${i}\n${'fn work<T>(v: &T) -> &T { v }\n'.repeat(260)}`,
+    }));
+    const result = await client.callTool({
+      name: "create_code_tour_card",
+      arguments: { title: "Rust tour", files },
+    });
+    expect(result.isError).toBeUndefined();
+    const content = result.content as ContentBlock[];
+    expect(content[0].text).toContain("more part(s) remain");
+    expect(JSON.stringify(result).length).toBeLessThan(40_000);
+
+    const part2 = await client.callTool({
+      name: "create_code_tour_card",
+      arguments: { title: "Rust tour", files, part: 2 },
+    });
+    expect(part2.isError).toBeUndefined();
+    expect(JSON.stringify(part2).length).toBeLessThan(40_000);
+  });
+
+  it("reports an actionable error rather than an unrenderable table", async () => {
+    const rows = Array.from({ length: 4000 }, (_, i) => [`row ${i}`, "x".repeat(40)]);
+    const result = await client.callTool({
+      name: "create_table_card",
+      arguments: { title: "Too big", headers: ["Name", "Value"], rows },
+    });
+    expect(result.isError).toBe(true);
+    const content = result.content as ContentBlock[];
+    expect(content[0].text).toContain("over the");
+    expect(content[0].text).toContain("Split the content");
+  });
+});
+
+describe("text handling through the tool layer", () => {
+  it("does not double-escape a pre-escaped title", async () => {
+    const result = await client.callTool({
+      name: "create_reveal_card",
+      arguments: {
+        title: "Predict, Spot &amp; Fix",
+        sections: [{ heading: "Why", text: "Because callers pre-escape." }],
+      },
+    });
+    const structured = result.structuredContent as CardStructuredContent;
+    expect(structured.card.articleHtml).toContain("<h1>Predict, Spot &amp; Fix</h1>");
+    expect(structured.card.articleHtml).not.toContain("&amp;amp;");
+  });
+
+  it("escapes a plain ampersand in the same field", async () => {
+    const result = await client.callTool({
+      name: "create_reveal_card",
+      arguments: { title: "Predict, Spot & Fix", sections: [{ heading: "Why", text: "Plain." }] },
+    });
+    const structured = result.structuredContent as CardStructuredContent;
+    expect(structured.card.articleHtml).toContain("<h1>Predict, Spot &amp; Fix</h1>");
+  });
+
+  it("keeps overlapping tutor terms out of attributes and svg titles", async () => {
+    const list = await client.callTool({
+      name: "create_list_card",
+      arguments: {
+        title: "Rust roadmap",
+        items: [{ text: "Parse arguments with clap, the argument crate." }],
+        tutorTerms: [
+          { term: "clap", tip: "The standard Rust crate for parsing command line arguments" },
+          { term: "crate", tip: "A Rust package or library" },
+        ],
+      },
+    });
+    const listHtml = (list.structuredContent as CardStructuredContent).card.articleHtml;
+    for (const [, tip] of listHtml.matchAll(/data-tip="([^"]*)"/g)) {
+      expect(tip).not.toContain("mcc-term");
+      expect(tip).not.toContain("<span");
+    }
+
+    const chart = await client.callTool({
+      name: "create_chart_card",
+      arguments: {
+        title: "Rust scorecard",
+        type: "bar",
+        labels: ["Memory safety", "Tooling"],
+        series: [{ name: "Rust", values: [5, 4] }],
+        tutorTerms: [{ term: "Memory safety", tip: "No data races at compile time" }],
+      },
+    });
+    const chartHtml = (chart.structuredContent as CardStructuredContent).card.articleHtml;
+    for (const [, text] of chartHtml.matchAll(/<title>([\s\S]*?)<\/title>/g)) {
+      expect(text).not.toContain("<span");
+    }
+  });
+});
+
 describe("card tool calls", () => {
   it("returns a ui:// html resource for a table card", async () => {
     const result = await client.callTool({
@@ -197,10 +318,10 @@ describe("card tool calls", () => {
     const content = result.content as ContentBlock[];
     expect(content[0].type).toBe("text");
     expect(content[0].text).toContain("table card");
-    const resource = content.find((block) => block.type === "resource")?.resource;
-    expect(resource?.uri).toMatch(/^ui:\/\/mcp-chat-cards\//);
-    expect(resource?.mimeType).toBe("text/html");
-    expect(resource?.text).toContain("<td>map</td>");
+    const link = content.find((block) => block.type === "resource_link");
+    expect(link?.uri).toMatch(/^ui:\/\/mcp-chat-cards\/html\//);
+    expect(link?.mimeType).toBe("text/html");
+    expect(await readCardHtml(result)).toContain("<td>map</td>");
   });
 
   it("returns a form card whose submission drives the next prompt", async () => {
@@ -215,10 +336,9 @@ describe("card tool calls", () => {
         ],
       },
     });
-    const content = result.content as ContentBlock[];
-    const resource = content.find((block) => block.type === "resource")?.resource;
-    expect(resource?.text).toContain("data-prompt-template");
-    expect(resource?.text).toContain("mcc-form");
+    const html = await readCardHtml(result);
+    expect(html).toContain("data-prompt-template");
+    expect(html).toContain("mcc-form");
   });
 
   it("validates chart inputs and reports tool errors", async () => {
@@ -239,9 +359,7 @@ describe("card tool calls", () => {
         items: [{ text: "Intro", children: [{ text: "Goals" }] }, { text: "Wrap up" }],
       },
     });
-    const content = result.content as ContentBlock[];
-    const resource = content.find((block) => block.type === "resource")?.resource;
-    expect(resource?.text).toContain("mcc-seq");
+    expect(await readCardHtml(result)).toContain("mcc-seq");
   });
 
   it("renders a markdown card from inline content", async () => {
@@ -252,10 +370,9 @@ describe("card tool calls", () => {
       },
     });
     expect(result.isError).toBeUndefined();
-    const content = result.content as ContentBlock[];
-    const resource = content.find((block) => block.type === "resource")?.resource;
-    expect(resource?.text).toContain("<h1>Field Guide</h1>");
-    expect(resource?.text).toContain("<summary>Basics</summary>");
+    const html = await readCardHtml(result);
+    expect(html).toContain("<h1>Field Guide</h1>");
+    expect(html).toContain("<summary>Basics</summary>");
     const structured = result.structuredContent as CardStructuredContent;
     expect(structured.card.config.kind).toBe("document");
   });
@@ -280,9 +397,7 @@ describe("card tool calls", () => {
       },
     });
     expect(result.isError).toBeUndefined();
-    const content = result.content as ContentBlock[];
-    const resource = content.find((block) => block.type === "resource")?.resource;
-    expect(resource?.text).toContain("language-python");
+    expect(await readCardHtml(result)).toContain("language-python");
   });
 
   it("blocks private urls in fetch_reference", async () => {

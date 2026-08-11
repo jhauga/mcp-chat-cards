@@ -21,6 +21,9 @@ export interface CardShellOptions {
   // Pre-rendered body markup. Builders are responsible for escaping.
   body: string;
   tutorTerms?: TutorTerm[];
+  // Highlight tutor terms inside code samples too. Off by default: marking up
+  // language keywords in sample source is noise, not teaching.
+  tutorTermsInCode?: boolean;
   contextActions?: ContextAction[];
   dwellMs?: number;
   copyable?: boolean;
@@ -49,9 +52,23 @@ export interface RenderedCard {
   summary: string;
 }
 
-const CSP =
+// Policy for the self-contained fallback document. Nothing loads except the
+// inline theme and runtime plus the media the card points at, so img-src and
+// media-src carry every scheme a card source may legitimately use - keep this
+// in step with isPlayableMediaUrl/isDisplayableImageUrl in util/html.ts.
+export const CARD_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
-  "img-src https: data:; media-src https: data:; font-src data:;";
+  "img-src https: data: blob:; media-src https: data: blob:; font-src data:;";
+
+// Policy for the MCP Apps template. The template is rendered by the host,
+// which may inject its own bridge script or stylesheet into the frame, so the
+// script/style/connect directives stay permissive; only the media and image
+// directives are pinned, because those are what a card actually needs and
+// what a host default policy is most likely to omit.
+export const CARD_TEMPLATE_CSP =
+  "default-src 'self' https:; script-src 'unsafe-inline' 'self' https:; " +
+  "style-src 'unsafe-inline' 'self' https:; img-src https: data: blob:; " +
+  "media-src https: data: blob:; font-src https: data:; connect-src 'self' https:;";
 
 // Escape "<" so a "</script>" inside JSON values cannot break out of the
 // config script element.
@@ -67,7 +84,9 @@ export function renderCardBody(options: CardShellOptions): {
   const id = uid("card");
   let body = options.body;
   if (options.tutorTerms && options.tutorTerms.length > 0) {
-    body = wrapTermsInHtml(body, options.tutorTerms);
+    body = wrapTermsInHtml(body, options.tutorTerms, {
+      includeCode: options.tutorTermsInCode === true,
+    });
   }
 
   const config: CardConfig = {
@@ -122,7 +141,7 @@ export function renderCardDocument(options: CardShellOptions): {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="${CSP}">
+<meta http-equiv="Content-Security-Policy" content="${CARD_CSP}">
 <title>${escapeHtml(options.title)}</title>
 <style>${CARD_THEME_CSS}</style>
 </head>

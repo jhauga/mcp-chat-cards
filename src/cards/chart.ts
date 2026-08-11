@@ -37,36 +37,131 @@ const WIDTH = 640;
 const HEIGHT = 340;
 const MARGIN = { top: 20, right: 20, bottom: 56, left: 52 };
 
-function niceMax(value: number): number {
-  if (value <= 0) return 1;
-  const magnitude = 10 ** Math.floor(Math.log10(value));
-  const normalized = value / magnitude;
-  const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
-  return nice * magnitude;
+export interface AxisScale {
+  max: number;
+  step: number;
+  ticks: number[];
 }
 
-function axisAndGrid(maxValue: number, plotWidth: number, plotHeight: number): string {
-  const ticks = 4;
+// Steps a reader can do arithmetic on, in ascending order within each decade.
+const STEP_MANTISSAS = [1, 2, 2.5, 5];
+
+// Choose an axis top and tick step covering [0, maxValue] in at most maxTicks
+// intervals, picking the SMALLEST readable step that fits rather than
+// slicing the range into a fixed number of equal parts. Slicing is what
+// produced ticks like 0, 1.3, 2.5, 3.8, 5 for data that only ever took
+// integer values; here integer data is additionally held to an integer step,
+// so a 1-5 rating scale reads 0, 1, 2, 3, 4, 5.
+export function niceScale(maxValue: number, maxTicks = 6, integerData = false): AxisScale {
+  if (!(maxValue > 0) || !Number.isFinite(maxValue)) return { max: 1, step: 1, ticks: [0, 1] };
+
+  let step = 0;
+  const startExponent = Math.floor(Math.log10(maxValue)) - 2;
+  for (let exponent = startExponent; exponent <= startExponent + 9 && step === 0; exponent++) {
+    for (const mantissa of STEP_MANTISSAS) {
+      const candidate = mantissa * 10 ** exponent;
+      if (candidate <= 0) continue;
+      if (integerData && !Number.isInteger(candidate)) continue;
+      // The epsilon keeps a max that is an exact multiple of the candidate
+      // from being counted as one interval too many.
+      if (Math.ceil(maxValue / candidate - 1e-9) <= maxTicks) {
+        step = candidate;
+        break;
+      }
+    }
+  }
+  if (step === 0) step = maxValue / maxTicks;
+
+  const max = Number((Math.ceil(maxValue / step - 1e-9) * step).toFixed(6));
+  const ticks: number[] = [];
+  // Half a step of slack absorbs the float drift that would otherwise drop
+  // the top tick when max is an exact multiple of step.
+  for (let value = 0; value <= max + step / 2; value += step) {
+    ticks.push(Number(value.toFixed(6)));
+  }
+  return { max, step, ticks };
+}
+
+// Data made only of integers gets an integer axis. A 1-5 rating scale is the
+// common case, and fractional ticks on it are noise.
+function seriesScale(series: ChartSeries[]): AxisScale {
+  const values = series.flatMap((s) => s.values).filter((value) => Number.isFinite(value));
+  return niceScale(Math.max(...values, 0), 6, values.every((value) => Number.isInteger(value)));
+}
+
+// Only the decimals the step actually needs, so a 0.25 step reads "0.25" and
+// a whole-number step never prints "3.0".
+function decimalsForStep(step: number): number {
+  if (Number.isInteger(step)) return 0;
+  const text = step.toPrecision(12).replace(/0+$/, "");
+  const dot = text.indexOf(".");
+  return dot === -1 ? 0 : Math.min(6, text.length - dot - 1);
+}
+
+function formatTick(value: number, step: number): string {
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(decimalsForStep(step));
+}
+
+function axisAndGrid(scale: AxisScale, plotWidth: number, plotHeight: number): string {
   let out = "";
-  for (let i = 0; i <= ticks; i++) {
-    const value = (maxValue / ticks) * i;
-    const y = MARGIN.top + plotHeight - (plotHeight * i) / ticks;
-    out += `<line x1="${MARGIN.left}" y1="${y}" x2="${MARGIN.left + plotWidth}" y2="${y}" stroke="#d8e2ec" stroke-width="1"/>`;
-    out += `<text x="${MARGIN.left - 8}" y="${y + 4}" text-anchor="end" font-size="11" fill="#5b6b7b">${escapeHtml(
-      Number.isInteger(value) ? String(value) : value.toFixed(1),
+  for (const value of scale.ticks) {
+    const y = MARGIN.top + plotHeight - (plotHeight * value) / scale.max;
+    out += `<line x1="${MARGIN.left}" y1="${y.toFixed(1)}" x2="${MARGIN.left + plotWidth}" y2="${y.toFixed(1)}" stroke="#d8e2ec" stroke-width="1"/>`;
+    out += `<text x="${MARGIN.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#5b6b7b">${escapeHtml(
+      formatTick(value, scale.step),
     )}</text>`;
   }
   return out;
 }
 
+// Break a label across at most maxLines lines without splitting words. A word
+// too long to fit on its own line is left alone rather than hyphenated - the
+// full text is always reachable from the <title> either way.
+export function wrapLabel(label: string, maxChars: number, maxLines: number): string[] {
+  const words = label.split(/\s+/).filter((word) => word.length > 0);
+  if (words.length === 0) return [label];
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current.length === 0 ? word : `${current} ${word}`;
+    if (candidate.length <= maxChars || current.length === 0) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current.length > 0) lines.push(current);
+  if (lines.length <= maxLines) return lines;
+  // Everything past the last line collapses into it, elided; the <title>
+  // still carries the whole label.
+  const kept = lines.slice(0, maxLines);
+  kept[maxLines - 1] = `${kept[maxLines - 1]}…`;
+  return kept;
+}
+
+// Category labels wrap onto up to two lines and carry the full text in a
+// <title>, so a long label is readable instead of hard-truncated to
+// "Runtime spe…" with no way to see the rest.
 function xLabels(labels: string[], plotWidth: number, plotHeight: number): string {
   const step = plotWidth / Math.max(1, labels.length);
+  const maxChars = Math.max(6, Math.floor(step / 6));
   return labels
     .map((label, i) => {
       const x = MARGIN.left + step * i + step / 2;
       const y = MARGIN.top + plotHeight + 16;
-      const short = label.length > 12 ? `${label.slice(0, 11)}…` : label;
-      return `<text x="${x}" y="${y}" text-anchor="middle" font-size="11" fill="#1f2328">${escapeHtml(short)}</text>`;
+      const lines = wrapLabel(label, maxChars, 2);
+      const tspans = lines
+        .map(
+          (line, index) =>
+            `<tspan x="${x.toFixed(1)}" dy="${index === 0 ? 0 : 12}">${escapeHtml(line)}</tspan>`,
+        )
+        .join("");
+      return (
+        `<text x="${x.toFixed(1)}" y="${y}" text-anchor="middle" font-size="11" fill="#1f2328">` +
+        `<title>${escapeHtml(label)}</title>${tspans}</text>`
+      );
     })
     .join("");
 }
@@ -74,7 +169,8 @@ function xLabels(labels: string[], plotWidth: number, plotHeight: number): strin
 function barChartSvg(labels: string[], series: ChartSeries[]): string {
   const plotWidth = WIDTH - MARGIN.left - MARGIN.right;
   const plotHeight = HEIGHT - MARGIN.top - MARGIN.bottom;
-  const maxValue = niceMax(Math.max(...series.flatMap((s) => s.values), 0));
+  const scale = seriesScale(series);
+  const maxValue = scale.max;
   const groupStep = plotWidth / Math.max(1, labels.length);
   const barWidth = Math.max(4, (groupStep * 0.7) / Math.max(1, series.length));
 
@@ -92,7 +188,7 @@ function barChartSvg(labels: string[], series: ChartSeries[]): string {
 
   return (
     `<svg viewBox="0 0 ${WIDTH} ${HEIGHT}" role="img" xmlns="http://www.w3.org/2000/svg">` +
-    axisAndGrid(maxValue, plotWidth, plotHeight) +
+    axisAndGrid(scale, plotWidth, plotHeight) +
     bars +
     xLabels(labels, plotWidth, plotHeight) +
     "</svg>"
@@ -102,7 +198,8 @@ function barChartSvg(labels: string[], series: ChartSeries[]): string {
 function lineChartSvg(labels: string[], series: ChartSeries[]): string {
   const plotWidth = WIDTH - MARGIN.left - MARGIN.right;
   const plotHeight = HEIGHT - MARGIN.top - MARGIN.bottom;
-  const maxValue = niceMax(Math.max(...series.flatMap((s) => s.values), 0));
+  const scale = seriesScale(series);
+  const maxValue = scale.max;
   const step = plotWidth / Math.max(1, labels.length);
 
   let lines = "";
@@ -128,7 +225,7 @@ function lineChartSvg(labels: string[], series: ChartSeries[]): string {
 
   return (
     `<svg viewBox="0 0 ${WIDTH} ${HEIGHT}" role="img" xmlns="http://www.w3.org/2000/svg">` +
-    axisAndGrid(maxValue, plotWidth, plotHeight) +
+    axisAndGrid(scale, plotWidth, plotHeight) +
     lines +
     xLabels(labels, plotWidth, plotHeight) +
     "</svg>"

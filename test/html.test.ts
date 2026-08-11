@@ -18,6 +18,27 @@ describe("escapeHtml", () => {
     expect(escapeHtml(null)).toBe("");
     expect(escapeHtml(undefined)).toBe("");
   });
+
+  it("does not re-escape text that already carries an entity", () => {
+    expect(escapeHtml("Predict, Spot &amp; Fix")).toBe("Predict, Spot &amp; Fix");
+    expect(escapeHtml("&lt;tag&gt; and &#39;quote&#39; and &#x27;hex&#x27;")).toBe(
+      "&lt;tag&gt; and &#39;quote&#39; and &#x27;hex&#x27;",
+    );
+  });
+
+  it("still escapes a bare ampersand", () => {
+    expect(escapeHtml("Tom & Jerry")).toBe("Tom &amp; Jerry");
+    expect(escapeHtml("AT&T")).toBe("AT&amp;T");
+    expect(escapeHtml("a & b &amp; c")).toBe("a &amp; b &amp; c");
+  });
+
+  it("escapes markup characters even when the input is pre-escaped elsewhere", () => {
+    // The safety property that lets the entity pass-through above be safe:
+    // nothing a caller sends can reopen a tag or break out of an attribute.
+    expect(escapeHtml('&amp;<script>alert("x")</script>')).toBe(
+      "&amp;&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
+    );
+  });
 });
 
 describe("sanitizeHtml", () => {
@@ -67,8 +88,75 @@ describe("wrapTermsInHtml", () => {
   });
 
   it("limits occurrences per term", () => {
-    const out = wrapTermsInHtml("<p>x x x x x</p>", [{ term: "x" }], 2);
+    const out = wrapTermsInHtml("<p>x x x x x</p>", [{ term: "x" }], { maxPerTerm: 2 });
     expect(out.match(/mcc-term/g)).toHaveLength(2);
+  });
+
+  it("highlights a term once per card by default", () => {
+    const out = wrapTermsInHtml("<p>trait and trait and trait</p>", [{ term: "trait" }]);
+    expect(out.match(/mcc-term/g)).toHaveLength(1);
+  });
+
+  it("never writes a term into another term's tip attribute", () => {
+    // The regression: "clap" is wrapped first, and its tip mentions "crate",
+    // so a second pass over the emitted markup used to nest a span inside the
+    // data-tip value.
+    const out = wrapTermsInHtml("<p>clap parses args</p>", [
+      { term: "clap", tip: "The standard Rust crate for parsing arguments" },
+      { term: "crate", tip: "A Rust package" },
+    ]);
+    expect(out).toContain('data-tip="The standard Rust crate for parsing arguments"');
+    // One wrapper, and nothing injected inside its tip.
+    expect(out.match(/<span/g)).toHaveLength(1);
+    for (const [, tip] of out.matchAll(/data-tip="([^"]*)"/g)) {
+      expect(tip).not.toContain("mcc-term");
+    }
+  });
+
+  it("leaves SVG title tooltips as plain text", () => {
+    const svg = '<svg><rect><title>Rust · Memory safety: 5</title></rect><text>Memory safety</text></svg>';
+    const out = wrapTermsInHtml(svg, [{ term: "Memory safety", tip: "No data races" }]);
+    expect(out).toContain("<title>Rust · Memory safety: 5</title>");
+    expect(out).toContain('<text><span class="mcc-term" data-tip="No data races">Memory safety</span></text>');
+  });
+
+  it("skips script and style text", () => {
+    const html = "<style>.term { color: red }</style><script>var term = 1;</script><p>term</p>";
+    const out = wrapTermsInHtml(html, [{ term: "term" }]);
+    expect(out).toContain("<style>.term { color: red }</style>");
+    expect(out).toContain("<script>var term = 1;</script>");
+    expect(out).toContain('<p><span class="mcc-term" data-tip="">term</span></p>');
+  });
+
+  it("skips code samples unless asked", () => {
+    const html = "<pre><code>let owner = 1;</code></pre><p>owner</p>";
+    const terms = [{ term: "owner", tip: "Who frees the value" }];
+    expect(wrapTermsInHtml(html, terms)).toContain("<code>let owner = 1;</code>");
+    const opted = wrapTermsInHtml(html, terms, { includeCode: true, maxPerTerm: 2 });
+    expect(opted).toContain('<code>let <span class="mcc-term"');
+  });
+
+  it("de-duplicates repeated terms and prefers the longest match", () => {
+    const out = wrapTermsInHtml("<p>memory safety matters</p>", [
+      { term: "memory", tip: "RAM" },
+      { term: "memory safety", tip: "No data races" },
+      { term: "Memory", tip: "duplicate" },
+    ]);
+    expect(out).toContain('data-tip="No data races">memory safety</span>');
+    expect(out).not.toContain('data-tip="RAM"');
+  });
+
+  it("caps the total number of highlights in one card", () => {
+    const terms = Array.from({ length: 10 }, (_, i) => ({ term: `t${i}` }));
+    const html = `<p>${terms.map((t) => t.term).join(" ")}</p>`;
+    expect(wrapTermsInHtml(html, terms, { maxTotal: 3 }).match(/mcc-term/g)).toHaveLength(3);
+  });
+
+  it("matches terms against the escaped text the card actually contains", () => {
+    const out = wrapTermsInHtml(`<p>${escapeHtml("R&D budget")}</p>`, [
+      { term: "R&D", tip: "Research and development" },
+    ]);
+    expect(out).toContain('data-tip="Research and development">R&amp;D</span>');
   });
 });
 

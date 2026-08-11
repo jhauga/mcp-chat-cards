@@ -7,6 +7,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1-alpha] - 2026-08-11
+
+### Fixed
+
+- Card results no longer inline the standalone HTML document. Its theme and runtime are
+  identical in every card, so echoing them added about 16 KB of boilerplate per call on
+  top of markup `structuredContent` already carried - crowding the caller's context and
+  pushing ordinary cards past the host's result ceiling, where they render nothing at
+  all. Non-Apps hosts now get a link to `ui://mcp-chat-cards/html/<card-id>` and can read
+  the same document from there; `MCP_CHAT_CARDS_EMBED_HTML=1` restores the inline copy.
+  A small table card's result dropped from roughly 18 KB to about 1.2 KB.
+- Code tours are budgeted by what a file costs after rendering rather than by its raw
+  length, so a few markup-dense source files split into parts instead of producing one
+  oversized card. Every finished result is measured against the host ceiling
+  (`MCP_CHAT_CARDS_RESULT_LIMIT`, default 40,000 characters); a card that cannot split
+  itself now returns an actionable error naming the overage instead of a result the host
+  will silently refuse to render.
+- Tutor term highlighting no longer corrupts markup. Terms were substituted term by term
+  over previously rewritten output, which let one term land inside another term's
+  `data-tip` attribute and inside SVG `<title>` tooltips, where the span showed as
+  literal text. Substitution is now a single pass over visible text only: attributes,
+  `<title>`, `<script>`, `<style>`, code samples, and text already inside an `.mcc-term`
+  span are skipped, and emitted markup is never rescanned.
+- Text fields are no longer double-escaped. A title passed as `Predict, Spot &amp; Fix`
+  rendered as `Predict, Spot &amp;amp; Fix`; a `&` that already begins a well-formed
+  character reference is now left alone. `<`, `>`, `"`, and `'` are still escaped
+  unconditionally, so nothing a caller sends can reopen a tag or an attribute.
+- Chart y-axis ticks are chosen as readable steps (1, 2, 2.5, or 5 times a power of ten)
+  rather than by slicing the range into four equal parts, so integer data reads
+  `0, 1, 2, 3, 4, 5` instead of `0, 1.3, 2.5, 3.8, 5`.
+- Long chart category labels wrap onto two lines and carry the full text in an SVG
+  `<title>`, instead of being hard-truncated to `Runtime spe…` with no way to see the rest.
+
+- Video cards render in the MCP Apps template path, not only in the standalone fallback
+  document. The player now sits in a frame that reserves a 16:9 box before metadata
+  arrives, so a buffering or blocked clip can no longer collapse the card to an invisible
+  zero-height element, and the template reports its size again once metadata lands.
+- The card template carries its own Content-Security-Policy declaring
+  `media-src https: data: blob:`, so a host default policy that omits media cannot
+  silently stop a clip from loading.
+
+### Changed
+
+- Tutor terms are highlighted once per card by default (was up to three times), duplicate
+  terms in the list are ignored, overlapping terms resolve longest-first, and a per-card
+  ceiling caps total highlights. `create_code_tour_card` gained `tutorTermsInCode` to opt
+  code samples back in.
+- Tool descriptions state that paths resolve on the machine running the server rather
+  than in the caller's sandbox, that cards render in the desktop sidebar only, that text
+  fields take plain text, and what the size budgets are.
+- `create_video_card` accepts a `data:video/*` URI or a `blob:` URL in addition to a
+  direct http(s) URL, matching what the card CSP already permits. Inline sources are
+  capped so a card payload stays small enough for hosts to render. A poster may likewise
+  be a `data:image/*` URI.
+- `create_video_card` gained an `autoplay` option, which implies `muted` because clients
+  ignore unmuted autoplay.
+- The video element carries its source both as a `src` attribute and as a `<source>`
+  child, and an http(s) clip gets a visible "Open the clip directly" link. When a host
+  strips the player from the injected markup, the card says so instead of showing a gap.
+- `sanitizeHtml` keeps `data:image/*`, `data:video/*`, and `data:audio/*` sources;
+  every other `data:` payload is still dropped.
+
 ## [0.1.0-alpha] - 2026-08-10
 
 ### Added

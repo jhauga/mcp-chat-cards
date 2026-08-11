@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { buildTabCard } from "./cards/tabs.js";
@@ -22,6 +22,7 @@ import { safeFetch, FetchError } from "./fetcher/fetch.js";
 import { extractPage } from "./fetcher/extract.js";
 import { readLocalTextFile } from "./util/files.js";
 import { readArchive } from "./util/archive.js";
+import { oversizedCardError, resultCharLimit } from "./util/budget.js";
 
 export const SERVER_VERSION = "0.1.0-alpha";
 
@@ -33,21 +34,35 @@ outline, or mirrored website form would communicate better than plain text.
 
 Card tools are linked to an MCP Apps UI template (ui://mcp-chat-cards/card.html), so hosts
 that support the MCP Apps extension render each card inline in the conversation as a
-sandboxed iframe. The same results also carry the full card as an embedded HTML resource
-for hosts without Apps support. Interactive elements talk back to the host (form
-submissions arrive as the next user prompt), so card forms are also useful to collect
-context that directs the rest of the conversation.
+sandboxed iframe. Interactive elements talk back to the host (form submissions arrive as
+the next user prompt), so card forms are also useful to collect context that directs the
+rest of the conversation.
 
-Files you generated earlier in the conversation plug straight into cards: pass a markdown
-file path (or content) to create_markdown_card to render a guide as one interactive card,
-and pass a project zip path to create_code_tour_card to render its source as file tabs.
-Use unpack_archive or read_local_file first when you need to inspect the contents before
-deciding which cards to build.
+Every card tool returns the same shape: a short text summary plus structuredContent
+{"card":{"articleHtml","config"}}, which is what the template paints. Hosts without Apps
+support also get a link to ui://mcp-chat-cards/html/<card-id>; read that resource for the
+same card as a standalone HTML document. The document is NOT inlined in the result,
+because its theme and runtime are identical in every card and repeating them crowds out
+the conversation.
+
+Rendering surface: cards render inline in the Claude desktop sidebar. Other surfaces
+(mobile and web) show the text summary instead, so keep each summary meaningful on its
+own and state any conclusion the card is making in the conversation as well.
+
+TEXT FIELDS TAKE PLAIN TEXT. Titles, labels, cell values, and tips are escaped by this
+server. Do not pre-escape them: pass "Predict, Spot & Fix", not "Predict, Spot &amp; Fix".
+
+Paths resolve on the machine running THIS server, not in your own sandbox. If the file
+you want lives only in your environment, pass its content inline (markdown/files) rather
+than a path; read_local_file and unpack_archive read the server's filesystem and are
+useful only for files that are already there.
 
 Large content is split automatically into multi-part cards so results stay small enough
-for hosts to render. When a card result says more parts remain, immediately call the same
-tool again with the indicated part number (keeping the other arguments identical) until
-every part has rendered as its own card.`;
+for hosts to render (the ceiling is about 40,000 characters of serialized result). When a
+card result says more parts remain, immediately call the same tool again with the
+indicated part number (keeping the other arguments identical) until every part has
+rendered as its own card. A card that cannot be split reports how far over the limit it
+is; split the input across several cards rather than retrying.`;
 
 // Shared zod fragments -------------------------------------------------
 
@@ -55,8 +70,10 @@ const tutorTermsSchema = z
   .array(z.object({ term: z.string().min(1), tip: z.string().optional() }))
   .optional()
   .describe(
-    "Educational tutor terms. Occurrences in the card are underlined; hovering ~1.2s shows the tip " +
-      "and notifies the host so the model can follow up.",
+    "Educational tutor terms. The first occurrence of each term in the card's visible prose is " +
+      "underlined; hovering ~1.2s shows the tip and notifies the host so the model can follow up. " +
+      "Terms are matched once per card, longest first, and never inside code samples, tooltips, " +
+      "or another term's tip. Term and tip are PLAIN text.",
   );
 
 const contextActionsSchema = z
@@ -99,11 +116,41 @@ function errorResult(error: unknown): CallToolResult {
   return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
 }
 
+// Where a rendered card's standalone HTML document can be read back. Kept off
+// the ui://mcp-chat-cards/<id> shape the template itself uses so the two
+// never collide in a host's resource table.
+export const CARD_HTML_URI_PREFIX = "ui://mcp-chat-cards/html/";
+
+export function cardHtmlUri(cardId: string): string {
+  return `${CARD_HTML_URI_PREFIX}${cardId}`;
+}
+
+// Opt-in escape hatch for a host that cannot follow a resource link and needs
+// the whole standalone document inlined in the tool result.
+export function embedStandaloneHtml(): boolean {
+  const value = (process.env.MCP_CHAT_CARDS_EMBED_HTML ?? "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "always";
+}
+
 export function createServer(): McpServer {
   const server = new McpServer(
     { name: "mcp-chat-cards", version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS },
   );
+
+  // Standalone documents for recently rendered cards, readable at
+  // ui://mcp-chat-cards/html/<id>. Bounded, because a long conversation would
+  // otherwise pin every card it ever rendered in memory.
+  const RECENT_CARD_LIMIT = 24;
+  const recentCards = new Map<string, string>();
+
+  const rememberCard = (card: RenderedCard): void => {
+    recentCards.set(card.id, card.html);
+    for (const id of recentCards.keys()) {
+      if (recentCards.size <= RECENT_CARD_LIMIT) break;
+      recentCards.delete(id);
+    }
+  };
 
   // Hosts that declared the MCP Apps extension render cards from
   // structuredContent via the template, so the bulky embedded-resource
@@ -116,7 +163,15 @@ export function createServer(): McpServer {
   };
 
   const cardResult = (card: RenderedCard): CallToolResult => {
+    rememberCard(card);
     const appsHost = clientSupportsApps();
+    // The standalone document repeats the same ~16KB of theme and runtime in
+    // every card on top of markup that structuredContent already carries.
+    // Echoing it inline floods the caller's context and is what pushes a
+    // normal card past the host's result ceiling, so it is offered as a link
+    // to a readable resource instead. A host that cannot follow a link can
+    // ask for the inline copy with MCP_CHAT_CARDS_EMBED_HTML=1.
+    const uri = cardHtmlUri(card.id);
     const content: CallToolResult["content"] = [
       {
         type: "text",
@@ -124,28 +179,39 @@ export function createServer(): McpServer {
           `${card.summary}\n` +
           (appsHost
             ? "The card renders inline via the MCP Apps template."
-            : "The card renders inline via the MCP Apps template on supporting hosts; " +
-              "it is also attached as an embedded HTML resource " +
-              `(ui://mcp-chat-cards/${card.id}) as a fallback.`),
+            : "The card renders inline via the MCP Apps template on supporting hosts. " +
+              `Read ${uri} for the same card as a standalone HTML document.`),
       },
     ];
     if (!appsHost) {
-      content.push({
-        type: "resource",
-        resource: {
-          uri: `ui://mcp-chat-cards/${card.id}`,
+      if (embedStandaloneHtml()) {
+        content.push({
+          type: "resource",
+          resource: { uri, mimeType: "text/html", text: card.html },
+        });
+      } else {
+        content.push({
+          type: "resource_link",
+          uri,
+          name: `${card.config.kind} card (standalone HTML)`,
           mimeType: "text/html",
-          text: card.html,
-        },
-      });
+        });
+      }
     }
-    return {
+    const result: CallToolResult = {
       content,
       // Consumed by the MCP Apps card template (see app-template.ts).
       structuredContent: {
         card: { articleHtml: card.articleHtml, config: card.config },
       },
     };
+    // Measured last, so the check covers exactly what goes over the wire. A
+    // host discards an oversized result rather than truncating it, so an
+    // actionable error is strictly better than emitting one.
+    const limit = resultCharLimit();
+    const size = JSON.stringify(result).length;
+    if (size > limit) throw oversizedCardError(card.config.kind, size, limit);
+    return result;
   };
 
   // Pre-declared MCP Apps UI template (SEP-1865). Hosts supporting the Apps
@@ -169,6 +235,31 @@ export function createServer(): McpServer {
         },
       ],
     }),
+  );
+
+  // Standalone HTML for a card the server rendered earlier. Hosts without
+  // MCP Apps support get a link to this instead of ~16KB of theme and runtime
+  // repeated inline in every single tool result.
+  server.registerResource(
+    "card-html",
+    new ResourceTemplate(`${CARD_HTML_URI_PREFIX}{cardId}`, { list: undefined }),
+    {
+      title: "Rendered card (standalone HTML)",
+      description:
+        "Self-contained HTML document for a card this server rendered earlier in the " +
+        "conversation, for hosts that cannot render the card inline.",
+      mimeType: "text/html",
+    },
+    async (uri, variables) => {
+      const cardId = String(variables.cardId ?? "");
+      const html = recentCards.get(cardId);
+      if (!html) {
+        throw new Error(
+          `No rendered card with id "${cardId}" is still available. Call the card tool again.`,
+        );
+      }
+      return { contents: [{ uri: uri.href, mimeType: "text/html", text: html }] };
+    },
   );
 
   server.registerTool(
@@ -342,17 +433,26 @@ export function createServer(): McpServer {
       _meta: CARD_UI_META,
       outputSchema: CARD_OUTPUT_SCHEMA,
       description:
-        "Render a card with an HTML video player for a short clip. src must be a direct http(s) " +
-        "URL to a video file (mp4/webm), not a streaming platform page. When no direct video URL " +
-        "exists, use create_animation_card to generate an animated clip instead.",
+        "Render a card with an HTML video player for a short clip. src must point straight at a " +
+        "video file (mp4/webm), not a streaming platform page: a direct http(s) URL, a small " +
+        "data:video/* URI, or a blob: URL. When no direct video source exists, use " +
+        "create_animation_card to generate an animated clip instead.",
       inputSchema: {
         title: z.string().min(1),
         subtitle: z.string().optional(),
-        src: z.string().url(),
-        poster: z.string().url().optional(),
+        src: z
+          .string()
+          .min(1)
+          .describe("Direct http(s) URL to a video file, a data:video/* URI, or a blob: URL"),
+        poster: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Still image shown before playback: http(s) URL or data:image/* URI"),
         description: z.string().optional(),
         loop: z.boolean().optional(),
         muted: z.boolean().optional(),
+        autoplay: z.boolean().optional().describe("Start muted playback on render"),
         contextActions: contextActionsSchema,
       },
     },
@@ -530,10 +630,18 @@ export function createServer(): McpServer {
         "Render a markdown document as one interactive card: tables become card tables, fenced " +
         "code gets copy buttons, and H2 sections fold into show/hide reveals. Pass either the " +
         "markdown content or the path of a markdown file generated earlier in the conversation " +
-        "(for example a walkthrough or guide) to plug it into the chat in one call.",
+        "(for example a walkthrough or guide) to plug it into the chat in one call. Long " +
+        "documents split at H2 boundaries into parts of about 32,000 characters each.",
       inputSchema: {
         markdown: z.string().optional().describe("Markdown content to render"),
-        path: z.string().optional().describe("Path to a local markdown file to render instead"),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Path to a markdown file ON THE MACHINE RUNNING THIS SERVER, not in the caller's " +
+              "sandbox. Over a remote bridge those are different machines: if the file exists " +
+              "only on your side, pass its text as markdown instead.",
+          ),
         title: z.string().optional().describe("Card title; defaults to the document's first H1"),
         subtitle: z.string().optional(),
         splitSections: z.boolean().optional().describe("Fold H2 sections into reveals (default true)"),
@@ -584,12 +692,22 @@ export function createServer(): McpServer {
       description:
         "Render a project's source as an interactive card with one tab per file (code with copy " +
         "buttons, ordered README, manifest, then src). Pass the path of a zip archive generated " +
-        "earlier in the conversation for a one-call plug-n-play tour, or pass files explicitly.",
+        "earlier in the conversation for a one-call plug-n-play tour, or pass files explicitly. " +
+        "Files are packed into parts of about 32,000 rendered characters each regardless of how " +
+        "many there are, so a handful of medium files still splits; when the result says more " +
+        "parts remain, call again with the next part.",
       inputSchema: {
         title: z.string().min(1),
         subtitle: z.string().optional(),
         intro: z.string().optional().describe("Guidance shown in a leading 'Start here' tab"),
-        archivePath: z.string().optional().describe("Path to a local zip; its text files become tabs"),
+        archivePath: z
+          .string()
+          .optional()
+          .describe(
+            "Path to a zip ON THE MACHINE RUNNING THIS SERVER, not in the caller's sandbox. " +
+              "Over a remote bridge those are different machines: if the archive exists only on " +
+              "your side, pass its text files as files instead.",
+          ),
         files: z
           .array(
             z.object({
@@ -605,6 +723,13 @@ export function createServer(): McpServer {
           .optional()
           .describe("With archivePath: only include entries whose path contains one of these"),
         maxTabs: z.number().int().min(1).max(24).optional(),
+        tutorTermsInCode: z
+          .boolean()
+          .optional()
+          .describe(
+            "Also highlight tutorTerms inside the code samples. Off by default, because marking " +
+              "up language keywords in source is noise rather than teaching.",
+          ),
         part: z
           .number()
           .int()
@@ -686,9 +811,11 @@ export function createServer(): McpServer {
     {
       title: "Read a local file",
       description:
-        "Read a local text file (typically one generated earlier in the conversation) so its " +
-        "content can be reviewed and plugged into cards. Size-capped; binary files are refused. " +
-        "Set MCP_CHAT_CARDS_FS_ROOT to confine reads to one directory.",
+        "Read a text file from the filesystem OF THE MACHINE RUNNING THIS SERVER so its content " +
+        "can be reviewed and plugged into cards. Over a remote bridge that is not the caller's " +
+        "sandbox: a file you generated on your side is not visible here, so pass its text to the " +
+        "card tool directly. Size-capped; binary files are refused. Set MCP_CHAT_CARDS_FS_ROOT " +
+        "to confine reads to one directory.",
       inputSchema: {
         path: z.string().min(1),
         maxChars: z.number().int().min(100).max(200000).optional(),
@@ -718,9 +845,10 @@ export function createServer(): McpServer {
     {
       title: "Unpack a zip archive",
       description:
-        "List a local zip archive's entries and return the contents of its text files, so a " +
-        "project generated earlier in the conversation can be inspected and turned into cards " +
-        "(code tours, tables, walkthroughs). Build caches and binary entries are skipped.",
+        "List a zip archive's entries and return the contents of its text files, so a project " +
+        "can be inspected and turned into cards (code tours, tables, walkthroughs). The path is " +
+        "resolved ON THE MACHINE RUNNING THIS SERVER, not in the caller's sandbox. Build caches " +
+        "and binary entries are skipped.",
       inputSchema: {
         path: z.string().min(1),
         include: z

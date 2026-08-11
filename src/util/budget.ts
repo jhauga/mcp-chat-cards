@@ -11,6 +11,29 @@ export function cardSizeBudget(): number {
   return Number.isFinite(fromEnv) && fromEnv >= 2000 ? fromEnv : DEFAULT_CARD_BUDGET;
 }
 
+// A host that receives a tool result over its own ceiling does not render a
+// truncated card - it discards the result and writes it to a file, so the
+// card never appears at all. Every result is measured against this limit
+// before it leaves the server, so an oversized card is split or reported
+// rather than emitted unrenderably. Budgets are in characters of serialized
+// JSON, which is the unit hosts report in their own error messages.
+export const DEFAULT_RESULT_LIMIT = 40_000;
+
+export function resultCharLimit(): number {
+  const fromEnv = Number(process.env.MCP_CHAT_CARDS_RESULT_LIMIT ?? "");
+  return Number.isFinite(fromEnv) && fromEnv >= 4000 ? fromEnv : DEFAULT_RESULT_LIMIT;
+}
+
+// Actionable message for a card that cannot be shrunk automatically, so the
+// caller knows which lever to pull instead of seeing a host-level failure.
+export function oversizedCardError(kind: string, size: number, limit: number): Error {
+  return new Error(
+    `This ${kind} card renders to ${size} characters, over the ${limit} character limit a host ` +
+      "will accept. Split the content across several cards: pass fewer rows, files, or sections " +
+      "per call, or use a tool that takes a part number and render one part at a time.",
+  );
+}
+
 // Greedy packing that preserves item order. A single oversized item still
 // gets its own part rather than being dropped.
 export function packByBudget<T>(
