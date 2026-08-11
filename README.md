@@ -7,8 +7,6 @@ short video clips, collapsible sections, and numbered outlines. On hosts that su
 (SEP-1865), cards render inline in the conversation as sandboxed iframes; other hosts
 receive each card as a self-contained embedded HTML resource.
 
-> Status: `0.1.0-alpha`. Interfaces and card markup may change without notice.
-
 ## Features
 
 - **Tab cards**: view different contexts of one subject side by side (per language,
