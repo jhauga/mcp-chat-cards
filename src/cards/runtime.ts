@@ -250,6 +250,161 @@ export const CARD_RUNTIME_JS = `(function () {
     }
   }
 
+  // ---- Animation cards: sequential scene player ----------------------
+  // Scenes are stacked layers; the player toggles mcc-active so CSS runs the
+  // per-scene transition, and a chart carrying data-mcc-zoom gets its SVG
+  // viewBox animated into the marked data region and back out mid-scene.
+  function animateViewBox(svg, fromBox, toBox, ms, done) {
+    var from = fromBox.split(" ").map(Number);
+    var to = toBox.split(" ").map(Number);
+    var start = null;
+    function frame(now) {
+      if (start === null) start = now;
+      var t = Math.min(1, (now - start) / ms);
+      var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      var box = [];
+      for (var i = 0; i < 4; i++) box.push(from[i] + (to[i] - from[i]) * eased);
+      svg.setAttribute("viewBox", box.join(" "));
+      if (t < 1) window.requestAnimationFrame(frame);
+      else if (done) done();
+    }
+    window.requestAnimationFrame(frame);
+  }
+
+  function initMotion(cfg) {
+    var groups = document.querySelectorAll(".mcc-motion");
+    for (var g = 0; g < groups.length; g++) {
+      (function (group) {
+        if (group.getAttribute("data-mcc-wired") === "1") return;
+        group.setAttribute("data-mcc-wired", "1");
+        var scenes = group.querySelectorAll(".mcc-scene");
+        if (scenes.length === 0) return;
+        var playButton = group.querySelector(".mcc-motion-play");
+        var replayButton = group.querySelector(".mcc-motion-replay");
+        var stepLabel = group.querySelector(".mcc-motion-step");
+        var progressFill = group.querySelector(".mcc-motion-progress-fill");
+        var loop = group.getAttribute("data-loop") === "1";
+        var reduceMotion = false;
+        try {
+          reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        } catch (err) { /* older webviews */ }
+
+        var index = 0;
+        var playing = false;
+        var timer = null;
+        var zoomTimers = [];
+
+        function sceneDuration(scene) {
+          var ms = parseInt(scene.getAttribute("data-duration") || "3500", 10);
+          return isNaN(ms) ? 3500 : ms;
+        }
+
+        function clearTimers() {
+          if (timer) clearTimeout(timer);
+          timer = null;
+          for (var i = 0; i < zoomTimers.length; i++) clearTimeout(zoomTimers[i]);
+          zoomTimers = [];
+        }
+
+        function resetProgress() {
+          if (!progressFill) return;
+          progressFill.style.transition = "none";
+          progressFill.style.width = "0%";
+        }
+
+        function startProgress(ms) {
+          if (!progressFill) return;
+          resetProgress();
+          // Force a reflow so the width transition restarts from zero.
+          void progressFill.offsetWidth;
+          progressFill.style.transition = "width " + ms + "ms linear";
+          progressFill.style.width = "100%";
+        }
+
+        function showScene(next) {
+          index = next;
+          for (var i = 0; i < scenes.length; i++) {
+            scenes[i].classList.toggle("mcc-active", i === index);
+          }
+          if (stepLabel) stepLabel.textContent = (index + 1) + "/" + scenes.length;
+          var scene = scenes[index];
+          var svg = scene.querySelector("svg[data-mcc-zoom]");
+          if (svg && !reduceMotion) {
+            var full = "0 0 160 90";
+            var zoomBox = svg.getAttribute("data-mcc-zoom");
+            var ms = sceneDuration(scene);
+            svg.setAttribute("viewBox", full);
+            zoomTimers.push(setTimeout(function () {
+              animateViewBox(svg, full, zoomBox, Math.min(700, ms * 0.2), null);
+            }, ms * 0.25));
+            zoomTimers.push(setTimeout(function () {
+              animateViewBox(svg, zoomBox, full, Math.min(700, ms * 0.2), null);
+            }, ms * 0.75));
+          }
+        }
+
+        function scheduleNext() {
+          var ms = sceneDuration(scenes[index]);
+          startProgress(ms);
+          timer = setTimeout(function () {
+            if (index + 1 < scenes.length) {
+              showScene(index + 1);
+              scheduleNext();
+            } else if (loop) {
+              showScene(0);
+              scheduleNext();
+            } else {
+              setPlaying(false);
+              resetProgress();
+              post("notify", { message: cardTag(cfg) + ":clip-finished" });
+            }
+          }, ms);
+        }
+
+        function setPlaying(next) {
+          playing = next;
+          if (playButton) playButton.textContent = playing ? "Pause" : "Play";
+        }
+
+        function play() {
+          setPlaying(true);
+          showScene(index);
+          scheduleNext();
+        }
+
+        function pause() {
+          setPlaying(false);
+          clearTimers();
+          resetProgress();
+        }
+
+        if (playButton) {
+          playButton.addEventListener("click", function () {
+            if (playing) { pause(); return; }
+            // Resuming replays the current scene from its start.
+            if (index === scenes.length - 1 && !loop) index = 0;
+            play();
+          });
+        }
+        if (replayButton) {
+          replayButton.addEventListener("click", function () {
+            clearTimers();
+            index = 0;
+            play();
+          });
+        }
+
+        showScene(0);
+        if (group.getAttribute("data-autoplay") === "1" && !reduceMotion) {
+          setPlaying(true);
+          scheduleNext();
+        } else {
+          setPlaying(false);
+        }
+      })(groups[g]);
+    }
+  }
+
   // ---- Tutor: dwell tooltips -----------------------------------------
   // Hovering a marked term longer than dwellMs shows its tip, promotes the
   // tip to a title attribute, and notifies the host so the model can react.
@@ -291,31 +446,167 @@ export const CARD_RUNTIME_JS = `(function () {
     }
   }
 
-  // ---- Tutor: right-click context actions ----------------------------
+  // ---- Right-click menu: model context actions + built-in items ------
+  function menuItem(menu, label, onClick) {
+    var item = document.createElement("button");
+    item.type = "button";
+    item.textContent = label;
+    item.addEventListener("click", function () {
+      menu.style.display = "none";
+      onClick(item);
+    });
+    menu.appendChild(item);
+    return item;
+  }
+
   function buildContextMenu(cfg) {
     var existing = document.getElementById("mcc-menu");
     if (existing) existing.remove();
     var actions = cfg.contextActions || [];
-    if (actions.length === 0) return;
     var menu = document.createElement("div");
     menu.id = "mcc-menu";
     for (var i = 0; i < actions.length; i++) {
       (function (action) {
-        var item = document.createElement("button");
-        item.type = "button";
-        item.textContent = action.label;
-        item.addEventListener("click", function () {
-          menu.style.display = "none";
+        menuItem(menu, action.label, function () {
           var selection = "";
           try { selection = String(window.getSelection() || ""); } catch (err) { selection = ""; }
           var prompt = action.prompt;
           while (prompt.indexOf("{{selection}}") > -1) prompt = prompt.replace("{{selection}}", selection);
           sendPrompt(cfg, prompt);
         });
-        menu.appendChild(item);
       })(actions[i]);
     }
+    if (actions.length > 0) {
+      var sep = document.createElement("div");
+      sep.className = "mcc-menu-sep";
+      menu.appendChild(sep);
+    }
+    // Copies the standalone card HTML; the Insert Card bookmarklet can then
+    // place it by hand on browser hosts.
+    menuItem(menu, "Copy card", function (item) {
+      copyText(cfg, "<!DOCTYPE html>\\n" + document.documentElement.outerHTML, item);
+    });
     document.body.appendChild(menu);
+  }
+
+  // ---- Runtime-owned styling and header toggles ----------------------
+  // The toggle buttons and their styling are created here instead of in the
+  // card markup, so cards rendered from older tool results also get them,
+  // and stale theme CSS cannot leave the buttons unstyled. Collapsing never
+  // removes anything - it only toggles a class whose CSS hides everything
+  // but the header strip, and the host shrinks the iframe to match.
+  var RUNTIME_CSS = "" +
+    ".mcc-icon-btn{display:inline-flex;align-items:center;justify-content:center;" +
+    "min-width:28px;min-height:26px;padding:3px 7px;line-height:1;" +
+    "font-family:Consolas,'Courier New',monospace;}" +
+    ".mcc-toggle-code.mcc-active{background:var(--mcc-primary-soft,#e7f0f9);}" +
+    ".mcc-card.mcc-collapsed .mcc-body,.mcc-card.mcc-collapsed .mcc-foot{display:none;}" +
+    ".mcc-card.mcc-collapsed .mcc-head{border-bottom:none;}" +
+    ".mcc-toggle-card .mcc-chevron{display:block;transition:transform 0.15s;}" +
+    ".mcc-card.mcc-collapsed .mcc-toggle-card .mcc-chevron{transform:rotate(-90deg);}" +
+    ".mcc-codeview{margin:0 0 12px;}" +
+    ".mcc-codeview[hidden]{display:none;}" +
+    ".mcc-codeview pre{max-height:280px;overflow:auto;}";
+
+  var CHEVRON_SVG = '<svg class="mcc-chevron" width="14" height="14" viewBox="0 0 16 16"' +
+    ' aria-hidden="true" focusable="false"><path d="M3 5.5 8 10.5 13 5.5" fill="none"' +
+    ' stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function ensureRuntimeStyle() {
+    if (document.getElementById("mcc-runtime-style")) return;
+    var style = document.createElement("style");
+    style.id = "mcc-runtime-style";
+    style.textContent = RUNTIME_CSS;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function ensureCardTools() {
+    var cards = document.querySelectorAll(".mcc-card");
+    for (var i = 0; i < cards.length; i++) {
+      (function (article) {
+        var head = article.querySelector(".mcc-head");
+        if (!head) return;
+        var tools = head.querySelector(".mcc-tools");
+        if (!tools) {
+          tools = document.createElement("div");
+          tools.className = "mcc-tools";
+          head.appendChild(tools);
+        }
+        // Order matters: the code toggle sits directly left of the collapse
+        // toggle at the right edge of the header strip.
+        if (article.getAttribute("data-mcc-no-code") !== "1" && !tools.querySelector(".mcc-toggle-code")) {
+          var codeButton = document.createElement("button");
+          codeButton.type = "button";
+          codeButton.className = "mcc-btn mcc-icon-btn mcc-toggle-code";
+          codeButton.title = "Show card code";
+          codeButton.setAttribute("aria-expanded", "false");
+          codeButton.textContent = "</>";
+          tools.appendChild(codeButton);
+        }
+        if (article.getAttribute("data-mcc-no-collapse") !== "1" && !tools.querySelector(".mcc-toggle-card")) {
+          var cardButton = document.createElement("button");
+          cardButton.type = "button";
+          cardButton.className = "mcc-btn mcc-icon-btn mcc-toggle-card";
+          cardButton.title = "Collapse card";
+          cardButton.setAttribute("aria-expanded", "true");
+          cardButton.innerHTML = CHEVRON_SVG;
+          tools.appendChild(cardButton);
+        }
+      })(cards[i]);
+    }
+  }
+
+  // ---- Card collapse and card-code view ------------------------------
+  function cardSourceHtml(article) {
+    var clone = article.cloneNode(true);
+    var junk = clone.querySelectorAll(".mcc-codeview, .mcc-drag");
+    for (var i = 0; i < junk.length; i++) junk[i].parentNode.removeChild(junk[i]);
+    return clone.outerHTML;
+  }
+
+  function setCardCollapsed(article, collapsed) {
+    article.classList.toggle("mcc-collapsed", collapsed);
+    var button = article.querySelector(".mcc-toggle-card");
+    if (button) {
+      // The chevron itself is CSS-rotated off the mcc-collapsed class.
+      button.title = collapsed ? "Expand card" : "Collapse card";
+      button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    }
+  }
+
+  function toggleCardCode(article, codeButton) {
+    var body = article.querySelector(".mcc-body");
+    if (!body) return;
+    var view = body.querySelector(".mcc-codeview");
+    var pre;
+    if (!view) {
+      view = document.createElement("div");
+      view.className = "mcc-codeview";
+      var wrap = document.createElement("div");
+      wrap.className = "mcc-codewrap";
+      var copyButton = document.createElement("button");
+      copyButton.type = "button";
+      copyButton.className = "mcc-btn mcc-copy-code";
+      copyButton.textContent = "Copy";
+      pre = document.createElement("pre");
+      wrap.appendChild(copyButton);
+      wrap.appendChild(pre);
+      view.appendChild(wrap);
+      body.insertBefore(view, body.firstChild);
+    } else {
+      view.hidden = !view.hidden;
+    }
+    var showing = !view.hidden;
+    if (showing) {
+      pre = view.querySelector("pre");
+      if (pre) pre.textContent = cardSourceHtml(article);
+      // A collapsed card would paint nothing; open it before showing code.
+      setCardCollapsed(article, false);
+    }
+    codeButton.classList.toggle("mcc-active", showing);
+    codeButton.setAttribute("aria-expanded", showing ? "true" : "false");
+    codeButton.title = showing ? "Hide card code" : "Show card code";
+    return showing;
   }
 
   // ---- Document-level listeners, wired exactly once ------------------
@@ -330,6 +621,31 @@ export const CARD_RUNTIME_JS = `(function () {
       var open = button.getAttribute("data-mcc-expand") === "all";
       var sections = document.querySelectorAll("details.mcc-reveal");
       for (var i = 0; i < sections.length; i++) sections[i].open = open;
+    });
+
+    // Collapse/expand card and show/hide card-code toggles.
+    document.addEventListener("click", function (event) {
+      var target = event.target;
+      if (!target.closest) return;
+      var cfg = readConfig();
+      var cardToggle = target.closest(".mcc-toggle-card");
+      if (cardToggle) {
+        var article = cardToggle.closest(".mcc-card");
+        if (article) {
+          var collapsed = !article.classList.contains("mcc-collapsed");
+          setCardCollapsed(article, collapsed);
+          post("notify", { message: cardTag(cfg) + (collapsed ? ":card-collapsed" : ":card-expanded") });
+        }
+        return;
+      }
+      var codeToggle = target.closest(".mcc-toggle-code");
+      if (codeToggle) {
+        var codeArticle = codeToggle.closest(".mcc-card");
+        if (codeArticle) {
+          var showing = toggleCardCode(codeArticle, codeToggle);
+          post("notify", { message: cardTag(cfg) + (showing ? ":code-shown" : ":code-hidden") });
+        }
+      }
     });
 
     // Copy card and copy code buttons.
@@ -384,8 +700,11 @@ export const CARD_RUNTIME_JS = `(function () {
 
   function mccInit() {
     var cfg = readConfig();
+    ensureRuntimeStyle();
+    ensureCardTools();
     wireDocument();
     initTabs();
+    initMotion(cfg);
     initDrag(cfg);
     initForms(cfg);
     initTutor(cfg);

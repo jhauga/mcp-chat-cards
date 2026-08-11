@@ -31,6 +31,7 @@ describe("tool listing", () => {
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual(
       [
+        "create_animation_card",
         "create_chart_card",
         "create_code_tour_card",
         "create_form_card",
@@ -41,6 +42,7 @@ describe("tool listing", () => {
         "create_table_card",
         "create_video_card",
         "fetch_reference",
+        "get_insert_bookmarklet",
         "mirror_web_form",
         "read_local_file",
         "submit_web_form",
@@ -61,6 +63,7 @@ describe("MCP Apps integration", () => {
       .map((tool) => tool.name)
       .sort();
     expect(linked).toEqual([
+      "create_animation_card",
       "create_chart_card",
       "create_code_tour_card",
       "create_form_card",
@@ -99,6 +102,54 @@ describe("MCP Apps integration", () => {
     expect(structured.card.articleHtml).toContain("mcc-card");
     expect(structured.card.articleHtml).not.toContain("<html");
     expect(structured.card.config.kind).toBe("show-hide");
+  });
+});
+
+describe("create_animation_card", () => {
+  it("renders a scene player card through the tool schema", async () => {
+    const result = await client.callTool({
+      name: "create_animation_card",
+      arguments: {
+        title: "Build pipeline in 3 scenes",
+        scenes: [
+          { heading: "The pipeline", text: "From source to binary.", transition: "fade" },
+          {
+            transition: "draw",
+            shapes: [
+              { type: "rect", x: 8, y: 35, w: 22, h: 22, label: "Source" },
+              { type: "arrow", x: 32, y: 46, x2: 55, y2: 46 },
+              { type: "rect", x: 58, y: 35, w: 22, h: 22, label: "Binary" },
+            ],
+          },
+          {
+            heading: "Build times",
+            chart: {
+              type: "bar",
+              labels: ["clean", "cached", "incremental"],
+              values: [42, 8, 3],
+              zoom: { from: 1, to: 2 },
+            },
+          },
+        ],
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as CardStructuredContent;
+    expect(structured.card.config.kind).toBe("motion");
+    expect(structured.card.articleHtml).toContain("mcc-motion");
+    expect(structured.card.articleHtml).toContain("data-mcc-zoom=");
+  });
+});
+
+describe("insert bookmarklet", () => {
+  it("returns the Insert Card bookmarklet with usage instructions", async () => {
+    const result = await client.callTool({ name: "get_insert_bookmarklet", arguments: {} });
+    const content = result.content as ContentBlock[];
+    const text = content[0].text ?? "";
+    expect(text).toContain("javascript:");
+    expect(text).toContain("Insert Card");
+    // The payload is URL-encoded so it survives being saved as a bookmark URL.
+    expect(text).toContain(encodeURIComponent("__mccInsertInstalled"));
   });
 });
 

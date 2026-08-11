@@ -1,11 +1,105 @@
 import { describe, expect, it } from "vitest";
+import { renderCardBody } from "../src/cards/shell.js";
 import { buildTabCard } from "../src/cards/tabs.js";
 import { buildTableCard } from "../src/cards/table.js";
 import { buildFormCard } from "../src/cards/form.js";
 import { buildChartCard } from "../src/cards/chart.js";
 import { buildVideoCard } from "../src/cards/video.js";
 import { buildRevealCard } from "../src/cards/reveal.js";
+import { buildMotionCard } from "../src/cards/motion.js";
 import { buildListCard } from "../src/cards/list.js";
+
+describe("card shell header toggles", () => {
+  it("leaves toggle creation to the runtime and does not opt out by default", () => {
+    const { articleHtml } = renderCardBody({ title: "T", kind: "tabs", body: "<p>x</p>" });
+    // The runtime creates the buttons at init so older cards get them too.
+    expect(articleHtml).not.toContain("mcc-toggle-code");
+    expect(articleHtml).not.toContain("mcc-toggle-card");
+    expect(articleHtml).not.toContain("data-mcc-no-code");
+    expect(articleHtml).not.toContain("data-mcc-no-collapse");
+  });
+
+  it("marks the article when either toggle is disabled", () => {
+    const { articleHtml } = renderCardBody({
+      title: "T",
+      kind: "tabs",
+      body: "<p>x</p>",
+      codeToggle: false,
+      collapsible: false,
+    });
+    expect(articleHtml).toContain('data-mcc-no-code="1"');
+    expect(articleHtml).toContain('data-mcc-no-collapse="1"');
+  });
+});
+
+describe("buildMotionCard", () => {
+  it("renders sequential scenes with player controls", () => {
+    const card = buildMotionCard({
+      title: "How sorting works",
+      scenes: [
+        { heading: "Sorting a list", text: "Three steps.", transition: "fade" },
+        { bullets: ["Compare", "Swap", "Repeat"], transition: "slide" },
+        {
+          heading: "Comparisons by size",
+          chart: {
+            type: "bar",
+            labels: ["10", "100", "1000"],
+            values: [4, 60, 900],
+            zoom: { from: 2, to: 2 },
+          },
+        },
+      ],
+    });
+    expect(card.html).toContain("mcc-motion");
+    expect((card.html.match(/class="mcc-scene /g) ?? []).length).toBe(3);
+    expect(card.html).toContain("mcc-scene-fade");
+    expect(card.html).toContain("mcc-scene-slide");
+    expect(card.html).toContain("mcc-motion-play");
+    expect(card.html).toContain("mcc-motion-replay");
+    expect(card.html).toContain("mcc-motion-progress");
+    // The chart zoom range becomes a viewBox target for the runtime.
+    expect(card.html).toContain("data-mcc-zoom=");
+    expect(card.summary).toContain("3 scene(s)");
+  });
+
+  it("staggers bullet builds and draws shapes", () => {
+    const card = buildMotionCard({
+      title: "Pipeline",
+      scenes: [
+        {
+          bullets: ["First", "Second"],
+          shapes: [
+            { type: "rect", x: 10, y: 30, w: 20, h: 20, label: "Input" },
+            { type: "arrow", x: 32, y: 40, x2: 55, y2: 40 },
+          ],
+          transition: "draw",
+        },
+      ],
+    });
+    expect(card.html).toContain('style="transition-delay:0ms"');
+    expect(card.html).toContain('style="transition-delay:350ms"');
+    expect(card.html).toContain("mcc-scene-draw");
+    expect(card.html).toContain("<polygon"); // arrowhead
+    expect(card.html).toContain("Input");
+  });
+
+  it("escapes hostile content and validates input", () => {
+    const card = buildMotionCard({
+      title: "T",
+      scenes: [{ heading: '<img onerror="x">', text: "<script>bad()</script>" }],
+    });
+    expect(card.html).not.toContain("<img onerror");
+    expect(card.html).not.toContain("<script>bad()");
+
+    expect(() => buildMotionCard({ title: "T", scenes: [] })).toThrow(/at least one scene/);
+    expect(() =>
+      buildMotionCard({
+        title: "T",
+        scenes: [{ chart: { type: "bar", labels: ["a"], values: [1, 2] } }],
+      }),
+    ).toThrow(/same number of labels and values/);
+  });
+});
 
 describe("buildTabCard", () => {
   it("renders tabs, panels, and code with copy button", () => {

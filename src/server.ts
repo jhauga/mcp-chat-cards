@@ -6,6 +6,7 @@ import { buildTableCard } from "./cards/table.js";
 import { buildFormCard, type FieldSpec } from "./cards/form.js";
 import { buildChartCard } from "./cards/chart.js";
 import { buildVideoCard } from "./cards/video.js";
+import { buildMotionCard, type MotionScene } from "./cards/motion.js";
 import { buildRevealCard } from "./cards/reveal.js";
 import { buildListCard, type ListItem } from "./cards/list.js";
 import type { RenderedCard } from "./cards/shell.js";
@@ -14,6 +15,7 @@ import {
   CARD_TEMPLATE_URI,
   MCP_APP_MIME_TYPE,
 } from "./cards/app-template.js";
+import { buildInsertBookmarklet } from "./cards/insert-bookmarklet.js";
 import { buildMarkdownCard } from "./cards/doc.js";
 import { buildCodeTourCard, type TourFile } from "./cards/code-tour.js";
 import { safeFetch, FetchError } from "./fetcher/fetch.js";
@@ -21,7 +23,7 @@ import { extractPage } from "./fetcher/extract.js";
 import { readLocalTextFile } from "./util/files.js";
 import { readArchive } from "./util/archive.js";
 
-export const SERVER_VERSION = "0.0.0-alpha";
+export const SERVER_VERSION = "0.1.0-alpha";
 
 const SERVER_INSTRUCTIONS = `mcp-chat-cards renders interactive HTML cards inside the chat.
 Use these tools whenever the conversation involves research, education, professional or
@@ -341,7 +343,8 @@ export function createServer(): McpServer {
       outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a card with an HTML video player for a short clip. src must be a direct http(s) " +
-        "URL to a video file (mp4/webm), not a streaming platform page.",
+        "URL to a video file (mp4/webm), not a streaming platform page. When no direct video URL " +
+        "exists, use create_animation_card to generate an animated clip instead.",
       inputSchema: {
         title: z.string().min(1),
         subtitle: z.string().optional(),
@@ -356,6 +359,99 @@ export function createServer(): McpServer {
     async (args) => {
       try {
         return cardResult(buildVideoCard(args));
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "create_animation_card",
+    {
+      title: "Create animation card",
+      _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
+      description:
+        "Render a short animated clip as a card when no direct video URL exists but motion would " +
+        "communicate better than static content - explanations, walkthroughs, and data stories. " +
+        "Scenes play sequentially in a 16:9 stage with play/pause, replay, and progress controls; " +
+        "everything is generated text, SVG shapes, and CSS animation (no external assets). " +
+        "Compose classic clip patterns and vary them per conversation: title reveal into bullet " +
+        "build (fade/slide), diagram walk-through with arrows tracing in (draw), a chart that " +
+        "zooms into the label range under discussion and back out (chart.zoom), and a closing " +
+        "takeaway scene (zoom). Mix scene kinds freely; per-scene transition and duration make " +
+        "endless variations from the same schema.",
+      inputSchema: {
+        title: z.string().min(1),
+        subtitle: z.string().optional(),
+        autoplay: z.boolean().optional().describe("Start playing on render (default true)"),
+        loop: z.boolean().optional().describe("Restart from scene 1 after the last scene"),
+        sceneDurationMs: z
+          .number()
+          .int()
+          .min(1200)
+          .max(20000)
+          .optional()
+          .describe("Default per-scene duration in ms (default 3500)"),
+        scenes: z
+          .array(
+            z.object({
+              heading: z.string().optional(),
+              text: z.string().optional(),
+              bullets: z
+                .array(z.string())
+                .max(6)
+                .optional()
+                .describe("Bullet points that build in one after another"),
+              transition: z
+                .enum(["fade", "slide", "zoom", "draw"])
+                .optional()
+                .describe("Scene entry animation; 'draw' traces shapes and chart lines in"),
+              durationMs: z.number().int().min(1200).max(20000).optional(),
+              shapes: z
+                .array(
+                  z.object({
+                    type: z.enum(["rect", "circle", "line", "arrow"]),
+                    x: z.number().min(0).max(100).describe("Percent from left"),
+                    y: z.number().min(0).max(100).describe("Percent from top"),
+                    w: z.number().min(0).max(100).optional(),
+                    h: z.number().min(0).max(100).optional(),
+                    r: z.number().min(0).max(100).optional(),
+                    x2: z.number().min(0).max(100).optional().describe("Line/arrow end"),
+                    y2: z.number().min(0).max(100).optional(),
+                    label: z.string().optional(),
+                    color: z.string().optional().describe("Hex color, e.g. #2b6cb0"),
+                  }),
+                )
+                .max(12)
+                .optional()
+                .describe("Simple diagram shapes on a 100x100 percent grid"),
+              chart: z
+                .object({
+                  type: z.enum(["bar", "line"]),
+                  labels: z.array(z.string()).min(1).max(24),
+                  values: z.array(z.number()).min(1).max(24),
+                  zoom: z
+                    .object({
+                      from: z.number().int().min(0),
+                      to: z.number().int().min(0),
+                    })
+                    .optional()
+                    .describe("Label index range the camera zooms into mid-scene, then back out"),
+                })
+                .optional()
+                .describe("Compact single-series chart animated inside the scene"),
+            }),
+          )
+          .min(1)
+          .max(12),
+        tutorTerms: tutorTermsSchema,
+        contextActions: contextActionsSchema,
+      },
+    },
+    async (args) => {
+      try {
+        return cardResult(buildMotionCard({ ...args, scenes: args.scenes as MotionScene[] }));
       } catch (error) {
         return errorResult(error);
       }
@@ -550,6 +646,39 @@ export function createServer(): McpServer {
         return errorResult(error);
       }
     },
+  );
+
+  server.registerTool(
+    "get_insert_bookmarklet",
+    {
+      title: "Get the Insert Card bookmarklet",
+      description:
+        "Return the Insert Card bookmarklet and usage instructions. Browsers do not let page " +
+        "script extend the native right-click menu, so this bookmarklet is how a copied card gets " +
+        "placed visually: after the user copies a card (right-click menu \"Copy card\" or the " +
+        "header button), running the bookmarklet on the host page shows an \"Insert Card\" item " +
+        "beside every right-click, which injects the copied card at that spot. The insertion is " +
+        "cosmetic and page-local (gone on reload, not part of the conversation history). Call " +
+        "this when the user asks how to place a card at an arbitrary spot on the page.",
+      inputSchema: {},
+    },
+    async () => ({
+      content: [
+        {
+          type: "text",
+          text:
+            "Insert Card bookmarklet - give these steps and the link to the user:\n" +
+            "1. Create a new bookmark in the browser and paste the javascript: link below as its URL " +
+            "(works in browser hosts; the desktop app has no bookmarks bar).\n" +
+            '2. Right-click a card and choose "Copy card" (or use the header button).\n' +
+            "3. Click the bookmark once on the conversation page to activate it.\n" +
+            '4. Right-click the spot where the card should appear and click the floating "Insert Card" item.\n' +
+            "The inserted card is a page-local preview only - it disappears on reload and is not part " +
+            "of the conversation history.\n\n" +
+            buildInsertBookmarklet(),
+        },
+      ],
+    }),
   );
 
   server.registerTool(

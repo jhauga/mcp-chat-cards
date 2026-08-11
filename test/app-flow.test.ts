@@ -97,6 +97,73 @@ describe("MCP Apps template flow", () => {
     expect(content.text).toBe("Teach ownership in Rust simply.");
   });
 
+  it("creates the header toggles at runtime, code toggle left of collapse toggle", () => {
+    const doc = window.document;
+    const tools = doc.querySelector(".mcc-tools") as HTMLElement;
+    expect(tools).not.toBeNull();
+    const buttons = Array.from(tools.querySelectorAll("button")).map((b) => b.className);
+    const codeIndex = buttons.findIndex((c) => c.includes("mcc-toggle-code"));
+    const cardIndex = buttons.findIndex((c) => c.includes("mcc-toggle-card"));
+    expect(codeIndex).toBeGreaterThan(-1);
+    expect(cardIndex).toBeGreaterThan(-1);
+    expect(codeIndex).toBeLessThan(cardIndex);
+    // The runtime also injects its own styling so stale themes cannot hide
+    // the collapsed state.
+    expect(doc.getElementById("mcc-runtime-style")?.textContent).toContain("mcc-collapsed");
+    expect(tools.querySelector(".mcc-toggle-card .mcc-chevron")).not.toBeNull();
+  });
+
+  it("collapses and expands the card from the header toggle", async () => {
+    const doc = window.document;
+    const article = doc.querySelector(".mcc-card") as HTMLElement;
+    const toggle = doc.querySelector(".mcc-toggle-card") as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await tick();
+    expect(article.classList.contains("mcc-collapsed")).toBe(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.title).toBe("Expand card");
+
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await tick();
+    expect(article.classList.contains("mcc-collapsed")).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.title).toBe("Collapse card");
+  });
+
+  it("shows and hides the card source from the code toggle", async () => {
+    const doc = window.document;
+    const article = doc.querySelector(".mcc-card") as HTMLElement;
+    const toggle = doc.querySelector(".mcc-toggle-code") as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await tick();
+    const view = article.querySelector(".mcc-codeview") as HTMLElement;
+    expect(view).not.toBeNull();
+    expect(view.hidden).toBe(false);
+    expect(view.querySelector("pre")?.textContent).toContain("mcc-card");
+    expect(toggle.title).toBe("Hide card code");
+
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await tick();
+    expect(view.hidden).toBe(true);
+    expect(toggle.title).toBe("Show card code");
+  });
+
+  it("builds a context menu with a built-in Copy card item and no Move card", () => {
+    const doc = window.document;
+    const menu = doc.getElementById("mcc-menu");
+    expect(menu).not.toBeNull();
+    const labels = Array.from(menu?.querySelectorAll("button") ?? []).map(
+      (button) => button.textContent,
+    );
+    expect(labels).toContain("Copy card");
+    expect(labels).not.toContain("Move card");
+  });
+
   it("reports its size after painting", () => {
     expect(received.some((msg) => msg.method === "ui/notifications/size-changed")).toBe(true);
   });

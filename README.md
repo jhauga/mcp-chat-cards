@@ -7,7 +7,7 @@ short video clips, collapsible sections, and numbered outlines. On hosts that su
 (SEP-1865), cards render inline in the conversation as sandboxed iframes; other hosts
 receive each card as a self-contained embedded HTML resource.
 
-> Status: `0.0.0-alpha`. Interfaces and card markup may change without notice.
+> Status: `0.1.0-alpha`. Interfaces and card markup may change without notice.
 
 ## Features
 
@@ -22,6 +22,10 @@ receive each card as a self-contained embedded HTML resource.
 - **Mirrored website forms**: fetch a real page, rebuild one of its forms as a card, then
   submit the actual website form with the user-entered values via `submit_web_form`.
 - **Video cards**: HTML `<video>` players for short clips.
+- **Animation cards**: model-composed animated clips for when no direct video URL exists -
+  sequential scenes of text, staggered bullet builds, simple SVG diagrams that trace
+  themselves in, and single-series charts that zoom into the data range under discussion,
+  all with video-style play/pause, replay, and progress controls.
 - **Show/hide cards**: collapsible sections with show-all/hide-all controls.
 - **Sequential list cards**: nested ordered lists numbered 1., 1.1., 1.1.1. via CSS counters.
 - **Document cards**: render a markdown document (a guide or walkthrough the model wrote)
@@ -41,6 +45,14 @@ receive each card as a self-contained embedded HTML resource.
 - **Movable content**: card blocks can be drag-reordered, drag out of the card carries the
   block as HTML, and every card has a "Copy card" button that copies the standalone HTML
   for pasting into other responses or files.
+- **Header toggles**: every card header has a `</>` button that shows or hides the card's
+  own HTML source in a code panel, and a chevron button beside it that collapses the card
+  down to its header row and expands it again.
+- **Copyable cards**: every card's right-click menu has a built-in "Copy card" item that
+  copies the standalone HTML, mirroring the header button. For visual placement,
+  `get_insert_bookmarklet` returns a bookmarklet that shows a floating "Insert Card" item
+  on right-click and injects the copied card at that spot (page-local preview; gone on
+  reload).
 
 ## When the model should call this server
 

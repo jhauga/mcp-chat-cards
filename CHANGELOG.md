@@ -7,6 +7,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha] - 2026-08-10
+
+### Added
+
+- `create_animation_card`: model-composed animated clips for when no direct video URL
+  exists but motion communicates best. Scenes play sequentially in a 16:9 stage with
+  play/pause, replay, and progress controls, built entirely from generated text, inline
+  SVG, and CSS animation (no external assets, CSP-safe). Scene ingredients: headings and
+  body text, staggered bullet builds, simple diagram shapes (rect/circle/line/arrow on a
+  percent grid, with a "draw" transition that traces them in), and compact single-series
+  bar/line charts whose viewBox animates into a chosen label range and back out
+  (`chart.zoom`). Per-scene transition presets (fade/slide/zoom/draw) and durations let
+  one schema produce endless clip variations; autoplay respects
+  `prefers-reduced-motion`, and finishing a clip notifies the host. The video card tool
+  now points to it when no direct URL is available.
+
+- Collapse/expand card button in the card header: a chevron toggle that folds the card
+  down to its header row and back, so long cards can be tucked away in the conversation.
+  Collapse state changes are reported to the host as notifications, and the iframe
+  resizes to the collapsed height on hosts that honor size-changed notifications.
+- Show/hide card code button in the card header: a `</>` toggle, positioned left of the
+  collapse/expand button, that reveals the card's own HTML source in a code panel with a
+  copy button. Showing the code on a collapsed card expands the card first.
+- Both header toggles (and their CSS) are created by the card runtime at init rather than
+  rendered into the card markup, so cards from older tool results grow the buttons too
+  when repainted, even against stale theme styling.
+- Card builders accept `collapsible` and `codeToggle` options (both default `true`) to
+  omit either header toggle.
+- Insert Card bookmarklet: the `get_insert_bookmarklet` tool returns a bookmarklet plus
+  usage steps. After "Copy card" puts a card's HTML on the clipboard, running the
+  bookmarklet on the host page shows a floating "Insert Card" item beside every
+  right-click; choosing it injects the copied card as a sandboxed iframe at that spot
+  (above or below the element under the cursor). Page-local preview only - browsers do
+  not let page script extend the native context menu, and the insertion disappears on
+  reload.
+- The card collapse toggle draws a thin inline SVG chevron that rotates between the
+  expanded (pointing down) and collapsed (pointing right) states; icon buttons got a
+  consistent square hit area.
+- Built-in "Copy card" item in every card's right-click menu, below any model-defined
+  context actions (separated by a divider). It copies the card's standalone HTML,
+  mirroring the header button, and pairs with the Insert Card bookmarklet.
+
 ## [0.0.0-alpha] - 2026-08-10
 
 ### Added

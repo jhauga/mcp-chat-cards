@@ -25,6 +25,10 @@ export interface CardShellOptions {
   dwellMs?: number;
   copyable?: boolean;
   draggable?: boolean;
+  // Header toggle that shows the card's own HTML source in a code panel.
+  codeToggle?: boolean;
+  // Header toggle that collapses the card down to its header row.
+  collapsible?: boolean;
 }
 
 export interface CardConfig {
@@ -78,11 +82,17 @@ export function renderCardBody(options: CardShellOptions): {
     options.copyable !== false
       ? '<button type="button" class="mcc-btn mcc-copy-card" title="Copy this card as standalone HTML to paste elsewhere">Copy card</button>'
       : "";
+  // The code and collapse toggles are created by the runtime, not rendered
+  // here, so cards from older tool results also grow them when repainted.
+  // These attributes are how a builder opts a card out.
+  const toggleAttrs =
+    (options.codeToggle === false ? ' data-mcc-no-code="1"' : "") +
+    (options.collapsible === false ? ' data-mcc-no-collapse="1"' : "");
   const subtitle = options.subtitle
     ? `<p class="mcc-subtitle">${escapeHtml(options.subtitle)}</p>`
     : "";
 
-  const articleHtml = `<article class="mcc-card" data-card-id="${escapeHtml(id)}">
+  const articleHtml = `<article class="mcc-card" data-card-id="${escapeHtml(id)}"${toggleAttrs}>
   <header class="mcc-head">
     <div>
       <h1>${escapeHtml(options.title)}</h1>

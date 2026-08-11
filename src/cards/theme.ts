@@ -91,6 +91,9 @@ body {
 .mcc-btn:focus-visible { outline: 2px solid var(--mcc-primary); outline-offset: 1px; }
 .mcc-btn-primary { background: var(--mcc-primary); border-color: var(--mcc-primary-dark); color: #ffffff; }
 .mcc-btn-primary:hover { background: var(--mcc-primary-dark); }
+/* The header toggle buttons (card code, collapse) are created and styled by
+   the card runtime (see RUNTIME_CSS in runtime.ts), so cards from older tool
+   results pick them up too. */
 
 /* Draggable blocks */
 .mcc-block { position: relative; margin: 0 0 12px; padding-left: 18px; }
@@ -228,6 +231,63 @@ ul.mcc-legend .mcc-swatch { display: inline-block; width: 10px; height: 10px; bo
 /* Video */
 .mcc-video video { width: 100%; max-height: 360px; border-radius: 6px; background: #1f2328; }
 
+/* Animation cards: 16:9 stage of stacked scenes played by the runtime */
+.mcc-motion .mcc-stage {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--mcc-border);
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--mcc-surface), var(--mcc-soft-bg));
+}
+.mcc-scene {
+  position: absolute;
+  inset: 0;
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.5s, transform 0.5s, visibility 0.5s;
+}
+.mcc-scene.mcc-active { opacity: 1; visibility: visible; }
+.mcc-scene-slide { transform: translateX(28px); }
+.mcc-scene-slide.mcc-active { transform: none; }
+.mcc-scene-zoom { transform: scale(0.85); }
+.mcc-scene-zoom.mcc-active { transform: scale(1); }
+/* "draw": shapes and chart lines trace themselves in as the scene enters. */
+.mcc-scene-draw .mcc-draw { stroke-dasharray: 600; stroke-dashoffset: 600; }
+.mcc-scene-draw.mcc-active .mcc-draw { animation: mcc-draw-in 1.2s ease forwards; }
+@keyframes mcc-draw-in { to { stroke-dashoffset: 0; } }
+.mcc-motion-heading { margin: 0; font-size: 20px; color: var(--mcc-primary-dark); }
+.mcc-motion-text { margin: 0; font-size: 14px; }
+.mcc-motion-bullets { margin: 0; padding-left: 20px; }
+.mcc-motion-bullet {
+  margin: 3px 0;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.4s, transform 0.4s;
+}
+.mcc-scene.mcc-active .mcc-motion-bullet { opacity: 1; transform: none; }
+.mcc-motion-shapes, .mcc-motion-chart { flex: 1 1 auto; min-height: 0; width: 100%; }
+.mcc-motion-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.mcc-motion-step { font-size: 12px; color: var(--mcc-muted); white-space: nowrap; }
+.mcc-motion-progress {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--mcc-primary-soft);
+  overflow: hidden;
+}
+.mcc-motion-progress-fill { width: 0%; height: 100%; background: var(--mcc-primary); }
+
 /* Tutor terms and tooltip */
 .mcc-term { border-bottom: 1px dotted var(--mcc-primary); cursor: help; }
 #mcc-tooltip {
@@ -270,6 +330,7 @@ ul.mcc-legend .mcc-swatch { display: inline-block; width: 10px; height: 10px; bo
   cursor: pointer;
 }
 #mcc-menu button:hover { background: var(--mcc-primary-soft); color: var(--mcc-primary-dark); }
+#mcc-menu .mcc-menu-sep { border-top: 1px solid var(--mcc-border); margin: 4px 2px; }
 
 p { margin: 0 0 8px; }
 img { max-width: 100%; height: auto; }
