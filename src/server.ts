@@ -23,8 +23,12 @@ import { extractPage } from "./fetcher/extract.js";
 import { readLocalTextFile } from "./util/files.js";
 import { readArchive } from "./util/archive.js";
 import { oversizedCardError, resultCharLimit } from "./util/budget.js";
+import { withInteroperableToolSchemas } from "./util/schema-dialect.js";
 
-export const SERVER_VERSION = "0.1.0-alpha";
+// Keep in step with package.json. This is the version the server announces
+// and the card template's __mccDebug() reports, so it is also how a live
+// review tells a current deployment from a stale one.
+export const SERVER_VERSION = "0.1.1-alpha";
 
 const SERVER_INSTRUCTIONS = `mcp-chat-cards renders interactive HTML cards inside the chat.
 Use these tools whenever the conversation involves research, education, professional or
@@ -691,7 +695,9 @@ export function createServer(): McpServer {
       outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a project's source as an interactive card with one tab per file (code with copy " +
-        "buttons, ordered README, manifest, then src). Pass the path of a zip archive generated " +
+        "buttons). Explicit files keep the order they are given in, with README and manifests " +
+        "hoisted to the front; archive files are ordered README, manifest, then src. Pass the " +
+        "path of a zip archive generated " +
         "earlier in the conversation for a one-call plug-n-play tour, or pass files explicitly. " +
         "Files are packed into parts of about 32,000 rendered characters each regardless of how " +
         "many there are, so a handful of medium files still splits; when the result says more " +
@@ -1036,6 +1042,13 @@ export function createServer(): McpServer {
       }
     },
   );
+
+  // The SDK stamps serialized tool schemas with the draft-07 dialect, which
+  // strict 2020-12-only hosts reject wholesale (see schema-dialect.ts).
+  // Normalizing on the transport at connect time is the one choke point every
+  // entry path - stdio in production, in-memory in tests - passes through.
+  const connect = server.connect.bind(server);
+  server.connect = (transport) => connect(withInteroperableToolSchemas(transport));
 
   return server;
 }

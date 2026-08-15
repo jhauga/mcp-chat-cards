@@ -4,7 +4,9 @@ import path from "node:path";
 import { zipSync, strToU8 } from "fflate";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  assertNativePath,
   FileAccessError,
+  hoistProjectAnchors,
   languageForFile,
   readLocalTextFile,
   resolveLocalPath,
@@ -62,6 +64,38 @@ describe("resolveLocalPath root restriction", () => {
   });
 });
 
+describe("assertNativePath cross-platform rejection", () => {
+  it("rejects a POSIX absolute path on Windows with a clear message", () => {
+    expect(() => assertNativePath("/root/sample.zip", "win32")).toThrow(/POSIX path/);
+    expect(() => assertNativePath("/root/sample.zip", "win32")).toThrow(/machine running this server/);
+  });
+
+  it("rejects a Windows path on POSIX with a clear message", () => {
+    expect(() => assertNativePath("C:\\projects\\sample.zip", "linux")).toThrow(/Windows path/);
+    expect(() => assertNativePath("C:/projects/sample.zip", "darwin")).toThrow(/Windows path/);
+    expect(() => assertNativePath("\\\\host\\share\\sample.zip", "linux")).toThrow(/Windows path/);
+  });
+
+  it("accepts native paths on their own platform", () => {
+    expect(() => assertNativePath("C:\\projects\\sample.zip", "win32")).not.toThrow();
+    expect(() => assertNativePath("\\\\host\\share\\sample.zip", "win32")).not.toThrow();
+    expect(() => assertNativePath("/home/demo-user/sample.zip", "linux")).not.toThrow();
+    expect(() => assertNativePath("relative/sample.zip", "win32")).not.toThrow();
+    expect(() => assertNativePath("relative/sample.zip", "linux")).not.toThrow();
+  });
+
+  it("rejects unexpanded home-relative paths on every platform", () => {
+    expect(() => assertNativePath("~/sample.zip", "win32")).toThrow(/Home-relative/);
+    expect(() => assertNativePath("~/sample.zip", "linux")).toThrow(/Home-relative/);
+  });
+
+  it("is enforced by resolveLocalPath instead of fabricating a drive letter", () => {
+    const foreign = process.platform === "win32" ? "/root/sample.zip" : "C:\\root\\sample.zip";
+    expect(() => resolveLocalPath(foreign)).toThrow(FileAccessError);
+    expect(() => resolveLocalPath(foreign)).toThrow(/path/i);
+  });
+});
+
 describe("languageForFile and ordering", () => {
   it("maps extensions to languages", () => {
     expect(languageForFile("src/main.rs")).toBe("rust");
@@ -74,6 +108,25 @@ describe("languageForFile and ordering", () => {
     expect(sorted[0]).toBe("README.md");
     expect(sorted[1]).toBe("Cargo.toml");
     expect(sorted[2]).toBe("src/main.rs");
+  });
+
+  it("hoistProjectAnchors keeps caller order apart from README and manifest", () => {
+    const ordered = hoistProjectAnchors([
+      "src/task.rs",
+      "src/error.rs",
+      "README.md",
+      "Cargo.toml",
+      "src/store.rs",
+      "src/main.rs",
+    ]);
+    expect(ordered).toEqual([
+      "README.md",
+      "Cargo.toml",
+      "src/task.rs",
+      "src/error.rs",
+      "src/store.rs",
+      "src/main.rs",
+    ]);
   });
 });
 

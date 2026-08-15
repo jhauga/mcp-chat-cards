@@ -7,6 +7,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2-alpha] - 2026-08-14
+
+Follow-up to a second live review pass (reviewed via Claude Desktop), which confirmed the
+0.1.1-alpha result-shape and size fixes in the running server and surfaced two new
+findings around local paths and file ordering, both fixed here.
+
+### Fixed
+
+- Tool schemas are served without a JSON Schema draft-07 dialect declaration. The MCP SDK
+  stamps every serialized zod schema with `"$schema": "http://json-schema.org/draft-07/schema#"`,
+  and a strict host whose validator supports only the spec's default 2020-12 dialect
+  (GitHub Copilot is one) rejected every tool declaring it - in practice every card tool,
+  since only they carry an `outputSchema`, while schema-less tools kept working. Outgoing
+  tool listings now drop the draft-07 stamp at the transport boundary (every emitted
+  construct means the same thing in both dialects), so each host validates under its own
+  default and accepts the tools. A canary test pins the SDK behavior so the shim is
+  retired the moment an SDK upgrade emits a different dialect.
+- Paths from another operating system are rejected with a clear error instead of being
+  silently grafted onto the local filesystem. A POSIX path like `/home/demo-user/project.zip`
+  sent to a server running on Windows previously resolved to
+  `C:\home\demo-user\project.zip` and reported "not found" - a path that never existed on
+  either machine. The error now names the mismatch and points the caller at passing file
+  content directly when the file only exists on their side. Windows paths sent to a POSIX
+  server and unexpanded `~/` paths are rejected the same way, on every path-taking tool
+  (`read_local_file`, `unpack_archive`, markdown `path`, code tour `archivePath`).
+- Code tour cards preserve the caller's file order instead of alphabetizing it. An
+  explicit `files` list often encodes a teaching order (data model, then errors, then the
+  entry point), which the previous reading-order sort destroyed; now only README and
+  manifest files are hoisted to the front and everything else stays where the caller put
+  it. Archive-sourced files still arrive in full reading order (README, manifest, then
+  source), since zip entry order carries no intent.
+
+### Changed
+
+- The `create_code_tour_card` description states the ordering rule: explicit files render
+  in the order given (README and manifests hoisted first); archive files are ordered
+  README, manifest, then source.
+
+### Added
+
+- Exit attribution on stderr. The entry point now reports uncaught exceptions, unhandled
+  rejections, transport closure, and the final exit code, so a host's per-server log can
+  distinguish a server crash from a dropped connection. Unhandled rejections are logged
+  and survived (card rendering is stateless per call); uncaught exceptions still exit
+  after being named.
+
 ## [0.1.1-alpha] - 2026-08-11
 
 ### Fixed

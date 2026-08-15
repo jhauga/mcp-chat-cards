@@ -94,4 +94,39 @@ describe("multi-part code tours", () => {
     const card = buildCodeTourCard({ title: "Huge", files: huge });
     expect(card.html).toContain("truncated: 24000 more character(s)");
   });
+
+  it("preserves the caller's teaching order instead of alphabetizing", () => {
+    // Deliberate pedagogical order: data model, errors, storage, entry point.
+    // An alphabetical sort would render error/main/store/task instead.
+    const tour = [
+      { path: "Cargo.toml", content: "[package]" },
+      { path: "src/task.rs", content: "// task" },
+      { path: "src/error.rs", content: "// error" },
+      { path: "src/store.rs", content: "// store" },
+      { path: "src/main.rs", content: "// main" },
+    ];
+    const parts = planTourParts(tour);
+    expect(parts.flat().map((file) => file.path)).toEqual([
+      "Cargo.toml",
+      "src/task.rs",
+      "src/error.rs",
+      "src/store.rs",
+      "src/main.rs",
+    ]);
+
+    const card = buildCodeTourCard({ title: "Ordered tour", files: tour });
+    const labelOrder = ["task.rs", "error.rs", "store.rs", "main.rs"].map((name) =>
+      card.articleHtml.indexOf(`src/${name}`),
+    );
+    expect(Math.min(...labelOrder)).toBeGreaterThan(-1);
+    expect([...labelOrder].sort((a, b) => a - b)).toEqual(labelOrder);
+  });
+
+  it("hoists a README to the front even when the caller lists it last", () => {
+    const parts = planTourParts([
+      { path: "src/main.rs", content: "// main" },
+      { path: "README.md", content: "# Sample project" },
+    ]);
+    expect(parts.flat().map((file) => file.path)).toEqual(["README.md", "src/main.rs"]);
+  });
 });

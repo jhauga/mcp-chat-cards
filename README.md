@@ -1,4 +1,4 @@
-# mcp-chat-cards
+# ![mcp-chat-cards](assets/logo.png)
 
 An MCP (Model Context Protocol) server that renders interactive HTML cards inside desktop
 chat clients. Instead of walls of text, conversations get tab boxes, tables, charts, forms,
@@ -28,8 +28,9 @@ receive each card as a self-contained embedded HTML resource.
 - **Sequential list cards**: nested ordered lists numbered 1., 1.1., 1.1.1. via CSS counters.
 - **Document cards**: render a markdown document (a guide or walkthrough the model wrote)
   as one interactive card with collapsible sections, styled tables, and copyable code.
-- **Code tour cards**: present a project as one tab per source file, ordered README,
-  manifest, then source, with language-tagged code and copy buttons.
+- **Code tour cards**: present a project as one tab per source file, in the order the
+  files are given (README and manifests hoisted first), with language-tagged code and
+  copy buttons.
 - **Model-generated file ingestion**: read local text files and unpack zip archives the
   model produced earlier in the conversation, so its own deliverables plug straight into
   cards without retyping anything.
@@ -165,8 +166,10 @@ every fenced code block gets a copy button.
 
 sent to `create_code_tour_card` unpacks the archive in memory and renders one tab per
 text file, ordered README, manifest, then source, each language-tagged with a copy
-button. Build caches (`target/`, `node_modules/`) and binary entries are skipped
-automatically. Use `unpack_archive` or `read_local_file` first when the model needs to
+button. Explicit `files` keep the order the caller gives them (README and manifests are
+hoisted to the front), so a deliberate teaching order - data model, then errors, then
+the entry point - renders as written instead of alphabetically. Build caches
+(`target/`, `node_modules/`) and binary entries are skipped automatically. Use `unpack_archive` or `read_local_file` first when the model needs to
 inspect contents before deciding which cards to build.
 
 When a document or project exceeds the card size budget (default about 32,000 characters
@@ -259,8 +262,11 @@ displays correctly; `<`, `>`, `"`, and `'` are always escaped regardless.
 `unpack_archive` all resolve paths on **the filesystem of the machine running this server**.
 When the server is reached over a remote bridge, that is not the caller's sandbox: a file
 the model generated on its own side does not exist here. Pass the content inline
-(`markdown`, `files`) in that case. Set `MCP_CHAT_CARDS_FS_ROOT` to confine local reads to
-one directory.
+(`markdown`, `files`) in that case. A path from the wrong operating system - say
+`/home/demo-user/project.zip` sent to a server running on Windows - is rejected with an
+error naming the mismatch rather than resolved onto a drive where it never existed; the
+same goes for Windows paths sent to a POSIX server and for unexpanded `~/` paths. Set
+`MCP_CHAT_CARDS_FS_ROOT` to confine local reads to one directory.
 
 ## Interactivity notes and limits
 

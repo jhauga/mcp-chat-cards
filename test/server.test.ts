@@ -1,8 +1,10 @@
 // Integration tests: run the real server over an in-memory MCP transport
 // and call tools exactly the way a chat client would.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createServer } from "../src/server.js";
 
 interface ContentBlock {
@@ -61,6 +63,50 @@ describe("tool listing", () => {
         "unpack_archive",
       ].sort(),
     );
+  });
+});
+
+describe("tool schema dialect interoperability", () => {
+  // A strict host validating with a 2020-12-only validator rejects any tool
+  // whose schema declares the draft-07 dialect - in practice every card
+  // tool, since only they carry an outputSchema. Served schemas must not
+  // declare draft-07.
+  it("serves every tool schema without a draft-07 dialect declaration", async () => {
+    const { tools } = await client.listTools();
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect((tool.inputSchema as Record<string, unknown>)?.["$schema"]).toBeUndefined();
+      const output = tool.outputSchema as Record<string, unknown> | undefined;
+      if (output) expect(output["$schema"]).toBeUndefined();
+    }
+    // The card tools' output schemas - the part strict hosts validate - are
+    // still being served at all.
+    expect(tools.filter((tool) => tool.outputSchema).length).toBeGreaterThan(0);
+  });
+
+  // Canary pinning the SDK behavior the shim compensates for: a bare
+  // McpServer still stamps draft-07. When an SDK upgrade makes this test
+  // fail, the SDK emits a different dialect and schema-dialect.ts can be
+  // retired.
+  it("canary: the bare SDK still stamps schemas with draft-07", async () => {
+    const raw = new McpServer({ name: "canary", version: "0.0.0" });
+    raw.registerTool(
+      "canary_tool",
+      {
+        inputSchema: { value: z.string() },
+        outputSchema: { value: z.string() },
+      },
+      async () => ({ content: [], structuredContent: { value: "x" } }),
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await raw.connect(serverTransport);
+    const rawClient = new Client({ name: "canary-client", version: "0.0.0" });
+    await rawClient.connect(clientTransport);
+    const { tools } = await rawClient.listTools();
+    expect((tools[0].outputSchema as Record<string, unknown>)["$schema"]).toBe(
+      "http://json-schema.org/draft-07/schema#",
+    );
+    await rawClient.close();
   });
 });
 

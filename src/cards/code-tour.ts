@@ -4,7 +4,7 @@
 // size budget are split into multiple parts (in reading order); each part
 // renders as its own card, and oversized single files are truncated.
 import { escapeHtml, textToParagraphs, type TutorTerm } from "../util/html.js";
-import { languageForFile, sortProjectFiles } from "../util/files.js";
+import { hoistProjectAnchors, languageForFile } from "../util/files.js";
 import {
   assertValidPart,
   cardSizeBudget,
@@ -76,13 +76,15 @@ function capContent(file: TourFile): TourFile {
 
 // Deterministic packing shared by every part call with the same inputs, so
 // the part numbers in a continuation note still mean the same thing when the
-// model calls back for part 2.
+// model calls back for part 2. Files keep the caller's order (README and
+// manifests hoisted first): an explicit list often encodes a teaching order,
+// and archive-sourced files arrive already in reading order.
 export function planTourParts(
   files: TourFile[],
   budget = cardSizeBudget(),
   maxTabs = DEFAULT_MAX_TABS,
 ): TourFile[][] {
-  const ordered = sortProjectFiles(files.map((file) => file.path));
+  const ordered = hoistProjectAnchors(files.map((file) => file.path));
   const byPath = new Map(files.map((file) => [file.path, file]));
   const capped = ordered.map((path) => capContent(byPath.get(path) as TourFile));
   return packByBudget(capped, renderedTabCost, budget, maxTabs);
