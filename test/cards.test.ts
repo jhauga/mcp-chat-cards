@@ -126,6 +126,30 @@ describe("buildTabCard", () => {
     expect(card.html).not.toContain("onclick");
     expect(card.html).toContain("hello");
   });
+
+  // The html field is the one place markup is honoured, so its policy has to
+  // stay exactly this: active content removed, formatting kept.
+  it("strips active content from an html tab while preserving formatting", () => {
+    const card = buildTabCard({
+      title: "Policy",
+      tabs: [
+        {
+          label: "A",
+          html:
+            '<p>Keep <b>bold</b> and <i>italic</i>.</p>' +
+            '<script>alert(1)</script>' +
+            '<img src="https://example.com/a.png" onerror="alert(1)">',
+        },
+      ],
+    });
+    expect(card.articleHtml).toContain("<b>bold</b>");
+    expect(card.articleHtml).toContain("<i>italic</i>");
+    expect(card.articleHtml).not.toContain("<script");
+    expect(card.articleHtml).not.toContain("alert(1)");
+    expect(card.articleHtml).not.toContain("onerror");
+    // The image itself survives; only the handler is removed.
+    expect(card.articleHtml).toContain('src="https://example.com/a.png"');
+  });
 });
 
 describe("buildTableCard", () => {
@@ -274,6 +298,31 @@ describe("buildVideoCard", () => {
     expect(card.articleHtml).toContain(" autoplay");
   });
 
+  it("rejects streaming platform page urls, which a <video> can never play", () => {
+    for (const src of [
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://youtu.be/dQw4w9WgXcQ",
+      "https://vimeo.com/123456",
+      "https://m.twitch.tv/videos/1",
+      "https://www.tiktok.com/@user/video/1",
+    ]) {
+      expect(() => buildVideoCard({ title: "V", src })).toThrow(/create_animation_card/);
+    }
+    // A lookalike host is not on the denylist.
+    expect(() =>
+      buildVideoCard({ title: "V", src: "https://notyoutube.com/clip.mp4" }),
+    ).not.toThrow();
+  });
+
+  it("warns when a direct url carries no recognizable video extension", () => {
+    const card = buildVideoCard({ title: "V", src: "https://cdn.example.com/asset/9f2c" });
+    expect(card.summary).toContain("no recognized video extension");
+    // A recognized extension says nothing extra.
+    expect(
+      buildVideoCard({ title: "V", src: "https://example.com/clip.mp4" }).summary,
+    ).not.toContain("no recognized");
+  });
+
   it("rejects sources no client could play", () => {
     expect(() => buildVideoCard({ title: "Bad", src: "file:///c:/x.mp4" })).toThrow(
       /data:video/,
@@ -309,6 +358,44 @@ describe("buildRevealCard", () => {
     expect(card.html).toContain("details");
     expect(card.html).toContain('data-mcc-expand="all"');
     expect(card.html).toContain("<details class=\"mcc-reveal\" open>");
+  });
+});
+
+describe("buildRevealCard code sections", () => {
+  it("renders code with a copy button and preserves leading whitespace", () => {
+    const card = buildRevealCard({
+      title: "Flags",
+      sections: [
+        {
+          heading: "Quiet",
+          text: "Add a bool field:",
+          code: "#[arg(long)]\n    quiet: bool,",
+          language: "rust",
+        },
+      ],
+    });
+    expect(card.articleHtml).toContain("<p>Add a bool field:</p>");
+    expect(card.articleHtml).toContain('<code class="language-rust">');
+    expect(card.articleHtml).toContain("#[arg(long)]\n    quiet: bool,");
+    expect(card.articleHtml).toContain("mcc-copy-code");
+  });
+
+  it("promotes a fenced block inside text to a code block", () => {
+    const card = buildRevealCard({
+      title: "Flags",
+      sections: [{ heading: "Quiet", text: "Add:\n\n```toml\nquiet = true\n```\n\nDone." }],
+    });
+    expect(card.articleHtml).toContain('<code class="language-toml">quiet = true</code>');
+    expect(card.articleHtml).toContain("<p>Done.</p>");
+  });
+
+  it("keeps html as the explicitly-html field, sanitized", () => {
+    const card = buildRevealCard({
+      title: "Flags",
+      sections: [{ heading: "Raw", html: '<p>ok</p><script>alert(1)</script>' }],
+    });
+    expect(card.articleHtml).toContain("<p>ok</p>");
+    expect(card.articleHtml).not.toContain("<script");
   });
 });
 

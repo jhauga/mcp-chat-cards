@@ -34,6 +34,38 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   mov: "video/quicktime",
 };
 
+// Hosts that serve video only through their own player. A <video> element
+// pointed at one of these pages loads an HTML document, so the card renders a
+// player that can never play: the failure is silent and looks like a broken
+// card rather than a bad argument. Rejecting at the tool boundary is the only
+// point where the caller can still be told what to do instead.
+const STREAMING_PAGE_HOSTS = [
+  "youtube.com",
+  "youtube-nocookie.com",
+  "youtu.be",
+  "vimeo.com",
+  "dailymotion.com",
+  "dai.ly",
+  "twitch.tv",
+  "tiktok.com",
+  "facebook.com",
+  "instagram.com",
+];
+
+// Matches the host itself and any subdomain of it, so "www.youtube.com" and
+// "m.youtube.com" are caught without matching "notyoutube.com".
+export function streamingPageHost(src: string): string | null {
+  let host: string;
+  try {
+    host = new URL(src).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+  return (
+    STREAMING_PAGE_HOSTS.find((known) => host === known || host.endsWith(`.${known}`)) ?? null
+  );
+}
+
 // The type hint on <source> lets a client skip a format it cannot decode
 // instead of downloading it first. An unknown extension yields no hint, which
 // is valid - the client then sniffs the response.
@@ -56,6 +88,15 @@ export function buildVideoCard(options: VideoCardOptions): RenderedCard {
     throw new Error(
       "Video src must be an http(s) URL, a data:video/* URI, or a blob: URL, got: " +
         `${src.slice(0, 64)}${src.length > 64 ? "..." : ""}`,
+    );
+  }
+  const streamingHost = streamingPageHost(src);
+  if (streamingHost) {
+    throw new Error(
+      `Video src must point straight at a video file (mp4/webm), but ${streamingHost} serves ` +
+        "video only through its own player page, which a <video> element cannot play. Pass a " +
+        "direct http(s) URL to the file, a data:video/* URI, or a blob: URL - or call " +
+        "create_animation_card to generate an animated clip instead.",
     );
   }
   if (src.startsWith("data:") && src.length > MAX_INLINE_MEDIA_CHARS) {
@@ -104,8 +145,18 @@ Your chat client cannot play embedded video.
     body,
     contextActions: options.contextActions,
   });
+  // Not every direct video URL carries an extension (a signed or generated
+  // one often does not), so an unrecognized path is a warning rather than a
+  // rejection - the caller sees it in the conversation if the player is blank.
+  const unknownType =
+    isHttpUrl(src) && !type
+      ? " The URL has no recognized video extension, so it may not be a direct video file;" +
+        " if the player stays blank, use create_animation_card instead."
+      : "";
   return {
     ...doc,
-    summary: `Created video card "${options.title}" for ${isHttpUrl(src) ? src : "an inline clip"}.`,
+    summary:
+      `Created video card "${options.title}" for ${isHttpUrl(src) ? src : "an inline clip"}.` +
+      unknownType,
   };
 }

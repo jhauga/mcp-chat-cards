@@ -1,4 +1,11 @@
-import { escapeHtml, sanitizeHtml, textToParagraphs, uid, type TutorTerm } from "../util/html.js";
+import {
+  escapeHtml,
+  renderCodeBlock,
+  sanitizeHtml,
+  textToParagraphs,
+  uid,
+  type TutorTerm,
+} from "../util/html.js";
 import { renderCardDocument, type ContextAction, type RenderedCard } from "./shell.js";
 
 export interface TabSpec {
@@ -21,14 +28,7 @@ export interface TabCardOptions {
 
 function tabPanelContent(tab: TabSpec): string {
   if (tab.html) return sanitizeHtml(tab.html);
-  if (tab.code !== undefined) {
-    return (
-      '<div class="mcc-codewrap">' +
-      '<button type="button" class="mcc-btn mcc-copy-code">Copy</button>' +
-      `<pre><code class="language-${escapeHtml(tab.language ?? "text")}">${escapeHtml(tab.code)}</code></pre>` +
-      "</div>"
-    );
-  }
+  if (tab.code !== undefined) return renderCodeBlock(tab.code, tab.language);
   return textToParagraphs(tab.text ?? "");
 }
 

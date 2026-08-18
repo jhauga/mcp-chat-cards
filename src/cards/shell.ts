@@ -5,6 +5,7 @@
 //   HTML document (inline theme, runtime, and a restrictive CSP) used as
 //   the embedded-resource fallback for hosts without MCP Apps support.
 import { escapeHtml, uid, wrapTermsInHtml, type TutorTerm } from "../util/html.js";
+import type { CardParts } from "../util/budget.js";
 import { CARD_THEME_CSS } from "./theme.js";
 import { CARD_RUNTIME_JS } from "./runtime.js";
 
@@ -50,6 +51,8 @@ export interface RenderedCard {
   articleHtml: string;
   config: CardConfig;
   summary: string;
+  // Present only on builders that split oversized content into parts.
+  parts?: CardParts;
 }
 
 // Policy for the self-contained fallback document. Nothing loads except the

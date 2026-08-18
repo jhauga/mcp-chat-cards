@@ -1,6 +1,6 @@
 # Chat Cards - GitHub Copilot canvas extension
 
-A GitHub Copilot canvas port of the [mcp-chat-cards](../README.md) MCP server. Instead of
+A GitHub Copilot canvas port of the [mcp-chat-cards](../../README.md) MCP server. Instead of
 walls of text, the agent builds a live deck of interactive cards in a canvas: tab boxes,
 tables, SVG charts, forms, collapsible sections, numbered outlines, rendered markdown
 documents, and short video clips. Forms are two-way: submitting one sends the values back
@@ -85,7 +85,7 @@ npm install
 ```
 
 `npm install` pulls the extension's single dependency (`@github/copilot-sdk`).
-Then register the `extension/` folder with your Copilot client as a local
+Then register the `extension/github/` folder with your Copilot client as a local
 extension, start a session, and ask the agent to open the Chat Cards canvas.
 The MCP server at the repository root is separate and is not affected by
 installing the extension (*and vice versa*); install whichever fits your host,
@@ -123,7 +123,7 @@ Deliberate differences:
 ## Folder layout
 
 ```text
-extension/
+extension/github/
   extension.mjs           Canvas/session wiring, actions, local HTTP + SSE server
   cards-core.mjs          Card builders and rendering (no SDK import; unit-testable)
   copilot-extension.json  Plugin manifest for the awesome-copilot submission

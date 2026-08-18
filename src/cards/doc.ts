@@ -10,6 +10,7 @@ import {
 } from "../util/markdown.js";
 import {
   assertValidPart,
+  cardParts,
   cardSizeBudget,
   continuationNote,
   packByBudget,
@@ -73,6 +74,7 @@ ${bodyHtml}
       : "a single flowing section";
   return {
     ...rendered,
+    parts: cardParts(info),
     summary:
       `Created document card "${partTitle(baseTitle, info)}" from markdown with ${described}.` +
       continuationNote("create_markdown_card", info),

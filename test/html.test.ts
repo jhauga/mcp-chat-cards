@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   escapeHtml,
   looksLikeUrl,
+  renderCodeBlock,
   sanitizeHtml,
+  textToBlocks,
   textToParagraphs,
   wrapTermsInHtml,
 } from "../src/util/html.js";
@@ -19,24 +21,25 @@ describe("escapeHtml", () => {
     expect(escapeHtml(undefined)).toBe("");
   });
 
-  it("does not re-escape text that already carries an entity", () => {
-    expect(escapeHtml("Predict, Spot &amp; Fix")).toBe("Predict, Spot &amp; Fix");
-    expect(escapeHtml("&lt;tag&gt; and &#39;quote&#39; and &#x27;hex&#x27;")).toBe(
-      "&lt;tag&gt; and &#39;quote&#39; and &#x27;hex&#x27;",
+  // Input is literal text, never decoded first. A caller writing about HTML
+  // passes "&amp;" because the reader should SEE "&amp;", so the entity's own
+  // ampersand is escaped like any other character.
+  it("escapes a pre-escaped entity a second time so it displays literally", () => {
+    expect(escapeHtml("Predict, Spot &amp; Fix")).toBe("Predict, Spot &amp;amp; Fix");
+    expect(escapeHtml("&lt;tag&gt; and &#39;quote&#39;")).toBe(
+      "&amp;lt;tag&amp;gt; and &amp;#39;quote&amp;#39;",
     );
   });
 
-  it("still escapes a bare ampersand", () => {
+  it("escapes a bare ampersand", () => {
     expect(escapeHtml("Tom & Jerry")).toBe("Tom &amp; Jerry");
     expect(escapeHtml("AT&T")).toBe("AT&amp;T");
-    expect(escapeHtml("a & b &amp; c")).toBe("a &amp; b &amp; c");
+    expect(escapeHtml("a & b &amp; c")).toBe("a &amp; b &amp;amp; c");
   });
 
-  it("escapes markup characters even when the input is pre-escaped elsewhere", () => {
-    // The safety property that lets the entity pass-through above be safe:
-    // nothing a caller sends can reopen a tag or break out of an attribute.
+  it("escapes exactly once, never twice, for raw markup characters", () => {
     expect(escapeHtml('&amp;<script>alert("x")</script>')).toBe(
-      "&amp;&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
+      "&amp;amp;&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
     );
   });
 });
@@ -65,6 +68,43 @@ describe("sanitizeHtml", () => {
     expect(out).not.toContain("<form");
     expect(out).not.toContain("<iframe");
     expect(out).toContain("keep");
+  });
+});
+
+describe("renderCodeBlock", () => {
+  it("renders a copy button over an escaped code block", () => {
+    const out = renderCodeBlock('let x = "<a>" & 1;', "rust");
+    expect(out).toContain("mcc-copy-code");
+    expect(out).toContain('<code class="language-rust">');
+    expect(out).toContain("let x = &quot;&lt;a&gt;&quot; &amp; 1;");
+  });
+
+  it("defaults the language to text", () => {
+    expect(renderCodeBlock("x")).toContain('class="language-text"');
+  });
+});
+
+describe("textToBlocks", () => {
+  it("turns fenced runs into code blocks and keeps their indentation", () => {
+    const out = textToBlocks(
+      "Add a bool field:\n\n```rust\n#[arg(long)]\n    quiet: bool,\n```\n\nWhy it works: clap reads it.",
+    );
+    expect(out).toContain("<p>Add a bool field:</p>");
+    expect(out).toContain('<code class="language-rust">');
+    expect(out).toContain("#[arg(long)]\n    quiet: bool,");
+    expect(out).toContain("mcc-copy-code");
+    expect(out).toContain("<p>Why it works: clap reads it.</p>");
+  });
+
+  it("closes an unterminated fence at the end of the text", () => {
+    const out = textToBlocks("Intro.\n\n```\nstill code");
+    expect(out).toContain("<p>Intro.</p>");
+    expect(out).toContain("<pre><code");
+    expect(out).toContain("still code");
+  });
+
+  it("matches textToParagraphs when there is no fence", () => {
+    expect(textToBlocks("a\n\nb")).toBe(textToParagraphs("a\n\nb"));
   });
 });
 
@@ -134,6 +174,59 @@ describe("wrapTermsInHtml", () => {
     expect(wrapTermsInHtml(html, terms)).toContain("<code>let owner = 1;</code>");
     const opted = wrapTermsInHtml(html, terms, { includeCode: true, maxPerTerm: 2 });
     expect(opted).toContain('<code>let <span class="mcc-term"');
+  });
+
+  // The regression: a lowercase "path" earlier in the document swallowed the
+  // tip meant for the shell's PATH, and glossed a filesystem path with it.
+  it("matches terms case-sensitively by default", () => {
+    const html = "<p>Take an optional path; fall back to stdin.</p><p>drops it on your PATH</p>";
+    const out = wrapTermsInHtml(html, [{ term: "PATH", tip: "The directories your shell searches" }]);
+    expect(out).toContain('<span class="mcc-term" data-tip="The directories your shell searches">PATH</span>');
+    expect(out).toContain("an optional path;");
+    expect(out.match(/mcc-term/g)).toHaveLength(1);
+  });
+
+  // The adversarial ordering that regresses: the lowercase verbs appear
+  // EARLIER in the document than the capitalized trait names, so a
+  // case-insensitive scan claims them first and glosses the wrong word.
+  it("prefers the exact-case match later in the document over a lowercase one earlier", () => {
+    const html =
+      "<p>You can copy a handle and drop it when finished.</p>" +
+      "<p>Types implementing Copy are duplicated bitwise; Drop runs cleanup.</p>";
+    const out = wrapTermsInHtml(html, [
+      { term: "Copy", tip: "Bitwise-duplicable types" },
+      { term: "Drop", tip: "Runs cleanup when a value goes out of scope" },
+    ]);
+    expect(out).toContain('<span class="mcc-term" data-tip="Bitwise-duplicable types">Copy</span>');
+    expect(out).toContain(
+      '<span class="mcc-term" data-tip="Runs cleanup when a value goes out of scope">Drop</span>',
+    );
+    // The earlier lowercase verbs are left alone.
+    expect(out).toContain("You can copy a handle and drop it when finished.");
+    expect(out.match(/mcc-term/g)).toHaveLength(2);
+  });
+
+  it("matches a capitalized heading from a lowercase term when opted in", () => {
+    const out = wrapTermsInHtml("<h2>Ownership</h2><p>and more</p>", [
+      { term: "ownership", tip: "Who frees the value", caseInsensitive: true },
+    ]);
+    expect(out).toContain('data-tip="Who frees the value">Ownership</span>');
+  });
+
+  it("matches any casing when a term opts in", () => {
+    const out = wrapTermsInHtml("<p>an optional path here</p>", [
+      { term: "PATH", tip: "Any casing", caseInsensitive: true },
+    ]);
+    expect(out).toContain('data-tip="Any casing">path</span>');
+  });
+
+  it("keeps a case-sensitive term and its any-case twin on separate budgets", () => {
+    const out = wrapTermsInHtml("<p>path then PATH</p>", [
+      { term: "PATH", tip: "Shell search list" },
+      { term: "path", tip: "Filesystem location" },
+    ]);
+    expect(out).toContain('data-tip="Filesystem location">path</span>');
+    expect(out).toContain('data-tip="Shell search list">PATH</span>');
   });
 
   it("de-duplicates repeated terms and prefers the longest match", () => {

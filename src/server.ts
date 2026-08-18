@@ -22,7 +22,7 @@ import { safeFetch, FetchError } from "./fetcher/fetch.js";
 import { extractPage } from "./fetcher/extract.js";
 import { readLocalTextFile } from "./util/files.js";
 import { readArchive } from "./util/archive.js";
-import { oversizedCardError, resultCharLimit } from "./util/budget.js";
+import { oversizedCardError, resultCharLimit, SINGLE_PART } from "./util/budget.js";
 import { withInteroperableToolSchemas } from "./util/schema-dialect.js";
 
 // Keep in step with package.json. This is the version the server announces
@@ -62,22 +62,35 @@ than a path; read_local_file and unpack_archive read the server's filesystem and
 useful only for files that are already there.
 
 Large content is split automatically into multi-part cards so results stay small enough
-for hosts to render (the ceiling is about 40,000 characters of serialized result). When a
-card result says more parts remain, immediately call the same tool again with the
-indicated part number (keeping the other arguments identical) until every part has
-rendered as its own card. A card that cannot be split reports how far over the limit it
-is; split the input across several cards rather than retrying.`;
+for hosts to render (the ceiling is about 40,000 characters of serialized result). EVERY
+card result reports structuredContent.parts {"current","total","hasMore"}; while hasMore
+is true, content has been withheld, so immediately call the same tool again with
+part: current + 1 (keeping the other arguments identical) until every part has rendered
+as its own card. Cards that cannot split always report one part of one. A card that
+cannot be split reports how far over the limit it is; split the input across several
+cards rather than retrying.`;
 
 // Shared zod fragments -------------------------------------------------
 
 const tutorTermsSchema = z
-  .array(z.object({ term: z.string().min(1), tip: z.string().optional() }))
+  .array(
+    z.object({
+      term: z.string().min(1),
+      tip: z.string().optional(),
+      caseInsensitive: z
+        .boolean()
+        .optional()
+        .describe("Match the term regardless of letter case (default false)"),
+    }),
+  )
   .optional()
   .describe(
     "Educational tutor terms. The first occurrence of each term in the card's visible prose is " +
       "underlined; hovering ~1.2s shows the tip and notifies the host so the model can follow up. " +
       "Terms are matched once per card, longest first, and never inside code samples, tooltips, " +
-      "or another term's tip. Term and tip are PLAIN text.",
+      "or another term's tip. Matching is CASE-SENSITIVE, so \"PATH\" does not attach its tip to " +
+      "a filesystem \"path\"; set caseInsensitive on a term to match any casing. Term and tip are " +
+      "PLAIN text.",
   );
 
 const contextActionsSchema = z
@@ -113,6 +126,21 @@ const CARD_OUTPUT_SCHEMA = {
       draggable: z.boolean(),
     }),
   }),
+  parts: z
+    .object({
+      current: z.number().describe("Part number this result rendered (1-based)"),
+      total: z.number().describe("How many parts the content splits into"),
+      hasMore: z
+        .boolean()
+        .describe("True when content was withheld; call again with part: current + 1"),
+    })
+    .describe(
+      "Split state, present on EVERY card result so one completeness check works for all " +
+        "card types. Cards that cannot split always report {current:1,total:1,hasMore:false}; " +
+        "create_markdown_card and create_code_tour_card pack oversized content into parts and " +
+        "can report more. Read hasMore rather than the card title to decide whether content " +
+        "was withheld.",
+    ),
 };
 
 function errorResult(error: unknown): CallToolResult {
@@ -204,9 +232,16 @@ export function createServer(): McpServer {
     }
     const result: CallToolResult = {
       content,
-      // Consumed by the MCP Apps card template (see app-template.ts).
+      // Consumed by the MCP Apps card template (see app-template.ts). parts is
+      // for the caller, not the template: it is the only machine-readable
+      // signal that a split withheld content, and without it a consumer that
+      // does not scrape "(part 1 of 2)" out of the title silently drops files.
+      // Emitted unconditionally - a card that cannot split still reports one
+      // part of one - so `result.parts.hasMore` never throws on the card types
+      // that happen not to split.
       structuredContent: {
         card: { articleHtml: card.articleHtml, config: card.config },
+        parts: card.parts ?? SINGLE_PART,
       },
     };
     // Measured last, so the check covers exactly what goes over the wire. A
@@ -438,9 +473,11 @@ export function createServer(): McpServer {
       outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a card with an HTML video player for a short clip. src must point straight at a " +
-        "video file (mp4/webm), not a streaming platform page: a direct http(s) URL, a small " +
-        "data:video/* URI, or a blob: URL. When no direct video source exists, use " +
-        "create_animation_card to generate an animated clip instead.",
+        "video file (mp4/webm): a direct http(s) URL, a small data:video/* URI, or a blob: URL. " +
+        "Streaming platform page URLs (YouTube, Vimeo, Twitch, TikTok, and similar) are " +
+        "REJECTED, because a video element pointed at a player page renders a card that can " +
+        "never play. When no direct video source exists, use create_animation_card to generate " +
+        "an animated clip instead.",
       inputSchema: {
         title: z.string().min(1),
         subtitle: z.string().optional(),
@@ -570,7 +607,9 @@ export function createServer(): McpServer {
       outputSchema: CARD_OUTPUT_SCHEMA,
       description:
         "Render a card of collapsible show/hide sections with show-all/hide-all buttons. Good for " +
-        "step-by-step guides, FAQs, spoilers, and long reference material.",
+        "step-by-step guides, FAQs, spoilers, and long reference material. Put source in a " +
+        "section's code field rather than inline in text, so it renders as a monospace block " +
+        "with a copy button instead of a paragraph.",
       inputSchema: {
         title: z.string().min(1),
         subtitle: z.string().optional(),
@@ -578,8 +617,13 @@ export function createServer(): McpServer {
           .array(
             z.object({
               heading: z.string().min(1),
-              html: z.string().optional(),
-              text: z.string().optional(),
+              html: z.string().optional().describe("HTML content (sanitized)"),
+              text: z
+                .string()
+                .optional()
+                .describe("Plain text content; ``` fenced blocks become code blocks"),
+              code: z.string().optional().describe("Code sample shown with a copy button"),
+              language: z.string().optional().describe("Language for the code sample"),
               open: z.boolean().optional(),
             }),
           )
@@ -634,8 +678,12 @@ export function createServer(): McpServer {
         "Render a markdown document as one interactive card: tables become card tables, fenced " +
         "code gets copy buttons, and H2 sections fold into show/hide reveals. Pass either the " +
         "markdown content or the path of a markdown file generated earlier in the conversation " +
-        "(for example a walkthrough or guide) to plug it into the chat in one call. Long " +
-        "documents split at H2 boundaries into parts of about 32,000 characters each.",
+        "(for example a walkthrough or guide) to plug it into the chat in one call. Raw HTML in " +
+        "the markdown is NOT rendered as markup: it is shown as literal text, the same as in " +
+        "every other card's text fields, so use markdown syntax for formatting. Long documents " +
+        "split at H2 boundaries into parts of about 32,000 rendered characters each; the " +
+        "result's structuredContent.parts {current,total,hasMore} says whether more parts " +
+        "remain. A document with no H2 headings cannot be split and renders as one part.",
       inputSchema: {
         markdown: z.string().optional().describe("Markdown content to render"),
         path: z
@@ -657,7 +705,7 @@ export function createServer(): McpServer {
           .optional()
           .describe(
             "Part number for large documents (1-based). Long documents split automatically; " +
-              "when the result says more parts remain, call again with the next part.",
+              "while structuredContent.parts.hasMore is true, call again with the next part.",
           ),
         tutorTerms: tutorTermsSchema,
         contextActions: contextActionsSchema,
@@ -700,8 +748,10 @@ export function createServer(): McpServer {
         "path of a zip archive generated " +
         "earlier in the conversation for a one-call plug-n-play tour, or pass files explicitly. " +
         "Files are packed into parts of about 32,000 rendered characters each regardless of how " +
-        "many there are, so a handful of medium files still splits; when the result says more " +
-        "parts remain, call again with the next part.",
+        "many there are, so a handful of medium files still splits. The result's " +
+        "structuredContent.parts {current,total,hasMore} reports the split: while hasMore is " +
+        "true some files were withheld, so call again with part: current + 1 and identical " +
+        "other arguments until every part has rendered.",
       inputSchema: {
         title: z.string().min(1),
         subtitle: z.string().optional(),
@@ -743,7 +793,7 @@ export function createServer(): McpServer {
           .optional()
           .describe(
             "Part number for large projects (1-based). Big tours split automatically; " +
-              "when the result says more parts remain, call again with the next part.",
+              "while structuredContent.parts.hasMore is true, call again with the next part.",
           ),
         tutorTerms: tutorTermsSchema,
         contextActions: contextActionsSchema,

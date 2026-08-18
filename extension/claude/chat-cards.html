@@ -1,10 +1,427 @@
-// Card building core for the Chat Cards canvas extension. This module is
-// dependency-free so the extension folder stays self-contained for reuse
-// outside this repository. It knows nothing about the Copilot SDK or the
-// page server; extension.mjs wires those. Everything here is pure string
-// logic, so it can be exercised with plain Node without joining a session.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat Cards</title>
+<style id="mcc-theme">
+/* Card theme for the Chat Cards deck.
+   Palette: 60% light cool primary surfaces, 30% secondary cool tones,
+   10% accent, dark neutral text on light backgrounds. The dark palette is
+   applied via data-theme on the root element. */
+:root {
+  --mcc-bg-a: #f5f8fb;
+  --mcc-bg-b: #eef3f8;
+  --mcc-surface: #ffffff;
+  --mcc-text: #1f2328;
+  --mcc-muted: #5b6b7b;
+  --mcc-border: #d8e2ec;
+  --mcc-primary: #2b6cb0;
+  --mcc-primary-dark: #1a4f86;
+  --mcc-primary-soft: #e7f0f9;
+  --mcc-green: #2f855a;
+  --mcc-accent: #b45309;
+  --mcc-head-a: #f2f7fc;
+  --mcc-head-b: #eaf1f8;
+  --mcc-soft-bg: #f7fafc;
+  --mcc-code-bg: #f3f6fa;
+  --mcc-reveal-bg: #fbfdfe;
+  --mcc-radius: 10px;
+}
+:root[data-theme="dark"] {
+  --mcc-bg-a: #161a20;
+  --mcc-bg-b: #12161b;
+  --mcc-surface: #1d232b;
+  --mcc-text: #e8edf2;
+  --mcc-muted: #9aa7b4;
+  --mcc-border: #313c48;
+  --mcc-primary: #5b9bd5;
+  --mcc-primary-dark: #93bfe8;
+  --mcc-primary-soft: #253444;
+  --mcc-green: #5cbd8f;
+  --mcc-accent: #d9a05f;
+  --mcc-head-a: #222933;
+  --mcc-head-b: #1c232c;
+  --mcc-soft-bg: #191f26;
+  --mcc-code-bg: #171d24;
+  --mcc-reveal-bg: #1a2129;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--mcc-text);
+  background: linear-gradient(180deg, var(--mcc-bg-a), var(--mcc-bg-b));
+  padding: 10px;
+  min-height: 100vh;
+}
+.mcc-card {
+  background: var(--mcc-surface);
+  border: 1px solid var(--mcc-border);
+  border-radius: var(--mcc-radius);
+  box-shadow: 0 1px 3px rgba(31, 35, 40, 0.08);
+  overflow: hidden;
+}
+.mcc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, var(--mcc-head-a), var(--mcc-head-b));
+  border-bottom: 1px solid var(--mcc-border);
+}
+.mcc-head h1 { font-size: 16px; margin: 0; font-weight: 600; }
+.mcc-subtitle { margin: 2px 0 0; font-size: 12px; color: var(--mcc-muted); }
+.mcc-tools { display: flex; gap: 6px; flex-shrink: 0; }
+.mcc-body { padding: 14px; }
+.mcc-foot {
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--mcc-muted);
+  border-top: 1px solid var(--mcc-border);
+  background: var(--mcc-soft-bg);
+}
+.mcc-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--mcc-border);
+  background: var(--mcc-surface);
+  color: var(--mcc-primary-dark);
+  cursor: pointer;
+}
+.mcc-btn:hover { background: var(--mcc-primary-soft); }
+.mcc-btn:focus-visible { outline: 2px solid var(--mcc-primary); outline-offset: 1px; }
+.mcc-btn-primary { background: var(--mcc-primary); border-color: var(--mcc-primary-dark); color: #ffffff; }
+.mcc-btn-primary:hover { background: var(--mcc-primary-dark); }
 
-// ---------------------------------------------------------------------------
+.mcc-block { position: relative; margin: 0 0 12px; }
+.mcc-block:last-child { margin-bottom: 0; }
+
+/* Tabs */
+.mcc-tabs [role="tablist"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 2px solid var(--mcc-border);
+  margin-bottom: 10px;
+}
+.mcc-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--mcc-muted);
+  cursor: pointer;
+  margin-bottom: -2px;
+}
+.mcc-tab:hover { color: var(--mcc-primary-dark); background: var(--mcc-primary-soft); }
+.mcc-tab[aria-selected="true"] {
+  color: var(--mcc-primary-dark);
+  font-weight: 600;
+  background: var(--mcc-surface);
+  border-color: var(--mcc-border) var(--mcc-border) var(--mcc-surface);
+  border-bottom: 2px solid var(--mcc-surface);
+}
+.mcc-panel[hidden] { display: none; }
+
+/* Tables */
+table.mcc-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.mcc-table caption { caption-side: top; text-align: left; color: var(--mcc-muted); font-size: 12px; padding-bottom: 6px; }
+.mcc-table th, .mcc-table td { border: 1px solid var(--mcc-border); padding: 6px 10px; text-align: left; vertical-align: top; }
+.mcc-table thead th { background: var(--mcc-primary-soft); color: var(--mcc-primary-dark); }
+.mcc-table tbody tr:nth-child(even) { background: var(--mcc-soft-bg); }
+.mcc-table a { color: var(--mcc-primary); }
+.mcc-table-scroll { overflow-x: auto; }
+
+/* Forms */
+.mcc-form { display: grid; gap: 10px; }
+.mcc-field { display: grid; gap: 3px; }
+.mcc-field label { font-size: 13px; font-weight: 600; }
+.mcc-required { color: var(--mcc-accent); margin-left: 2px; }
+.mcc-help { font-size: 12px; color: var(--mcc-muted); }
+.mcc-field input[type="text"], .mcc-field input[type="email"], .mcc-field input[type="number"],
+.mcc-field input[type="url"], .mcc-field input[type="date"], .mcc-field input[type="password"],
+.mcc-field select, .mcc-field textarea {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--mcc-border);
+  border-radius: 6px;
+  background: var(--mcc-surface);
+  color: var(--mcc-text);
+  width: 100%;
+}
+.mcc-field textarea { min-height: 70px; resize: vertical; }
+.mcc-field input:focus-visible, .mcc-field select:focus-visible, .mcc-field textarea:focus-visible {
+  outline: 2px solid var(--mcc-primary);
+  outline-offset: 0;
+}
+.mcc-choice { display: flex; align-items: center; gap: 6px; font-weight: 400; }
+.mcc-form-status { font-size: 12px; color: var(--mcc-green); min-height: 16px; }
+.mcc-form-fallback { display: none; }
+.mcc-form-fallback.mcc-visible { display: block; }
+.mcc-form-fallback textarea { width: 100%; min-height: 90px; font-family: Consolas, monospace; font-size: 12px; }
+
+/* Code */
+.mcc-codewrap { position: relative; }
+.mcc-codewrap pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--mcc-code-bg);
+  border: 1px solid var(--mcc-border);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+}
+.mcc-copy-code { position: absolute; top: 6px; right: 6px; }
+
+/* Show/hide sections */
+details.mcc-reveal {
+  border: 1px solid var(--mcc-border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--mcc-reveal-bg);
+}
+details.mcc-reveal > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: var(--mcc-primary-dark);
+  list-style: none;
+}
+details.mcc-reveal > summary::before { content: "\25B8"; display: inline-block; margin-right: 6px; transition: transform 0.15s; }
+details.mcc-reveal[open] > summary::before { transform: rotate(90deg); }
+details.mcc-reveal > .mcc-reveal-body { padding: 0 12px 10px; }
+
+/* Sequential nested lists: 1., 1.1., 1.1.1. via CSS counters */
+ol.mcc-seq { counter-reset: mccseq; list-style: none; padding-left: 6px; margin: 0; }
+ol.mcc-seq li { counter-increment: mccseq; margin: 4px 0; }
+ol.mcc-seq li::before {
+  content: counters(mccseq, ".") ". ";
+  font-weight: 600;
+  color: var(--mcc-primary-dark);
+}
+ol.mcc-seq ol.mcc-seq { padding-left: 22px; }
+
+/* Charts */
+.mcc-chart svg { max-width: 100%; height: auto; display: block; }
+ul.mcc-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0; margin: 8px 0 0; font-size: 12px; }
+ul.mcc-legend .mcc-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+
+/* Video */
+.mcc-video-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 360px;
+  min-height: 160px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1f2328;
+}
+.mcc-video video, .mcc-video-frame video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  max-height: 360px;
+  border-radius: 6px;
+  background: #1f2328;
+  object-fit: contain;
+}
+.mcc-video-fallback { margin: 6px 0 0; font-size: 12px; }
+
+/* Tutor terms and tooltip */
+.mcc-term { border-bottom: 1px dotted var(--mcc-primary); cursor: help; }
+.mcc-term:focus-visible { outline: 2px solid var(--mcc-primary); outline-offset: 1px; }
+#mcc-tooltip {
+  position: fixed;
+  z-index: 40;
+  max-width: 280px;
+  background: #24384c;
+  color: #f0f4f8;
+  font-size: 12px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(31, 35, 40, 0.25);
+  pointer-events: none;
+  display: none;
+}
+
+/* Context menu */
+#mcc-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 180px;
+  background: var(--mcc-surface);
+  border: 1px solid var(--mcc-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(31, 35, 40, 0.18);
+  padding: 4px;
+  display: none;
+}
+#mcc-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--mcc-text);
+  cursor: pointer;
+}
+#mcc-menu button:hover { background: var(--mcc-primary-soft); color: var(--mcc-primary-dark); }
+#mcc-menu .mcc-menu-sep { border-top: 1px solid var(--mcc-border); margin: 4px 2px; }
+
+p { margin: 0 0 8px; }
+img { max-width: 100%; height: auto; }
+
+/* Document card typography (rendered markdown) */
+.mcc-doc h2, .mcc-doc h3, .mcc-doc h4 { color: var(--mcc-primary-dark); margin: 14px 0 6px; }
+.mcc-doc h2 { font-size: 15px; }
+.mcc-doc h3 { font-size: 14px; }
+.mcc-doc ul, .mcc-doc ol { margin: 0 0 8px; padding-left: 22px; }
+.mcc-doc li { margin: 2px 0; }
+.mcc-doc blockquote {
+  margin: 0 0 8px;
+  padding: 6px 12px;
+  border-left: 3px solid var(--mcc-primary);
+  background: var(--mcc-primary-soft);
+  border-radius: 0 6px 6px 0;
+}
+.mcc-doc hr { border: none; border-top: 1px solid var(--mcc-border); margin: 12px 0; }
+.mcc-doc a { color: var(--mcc-primary); }
+.mcc-body code {
+  background: var(--mcc-code-bg);
+  border: 1px solid var(--mcc-border);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+}
+.mcc-codewrap pre code { background: transparent; border: none; padding: 0; }
+
+/* Deck chrome (canvas-only, not part of a copied card) */
+.mcc-deck-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  max-width: 860px;
+  margin: 0 auto 12px;
+  padding: 8px 12px;
+  background: var(--mcc-surface);
+  border: 1px solid var(--mcc-border);
+  border-radius: var(--mcc-radius);
+  box-shadow: 0 1px 3px rgba(31, 35, 40, 0.08);
+}
+.mcc-deck-brand { font-weight: 600; font-size: 14px; color: var(--mcc-primary-dark); }
+.mcc-deck-count { font-size: 12px; color: var(--mcc-muted); }
+#mcc-deck { max-width: 860px; margin: 0 auto; }
+#mcc-deck > .mcc-card { margin-bottom: 14px; }
+.mcc-empty {
+  max-width: 860px;
+  margin: 40px auto;
+  text-align: center;
+  color: var(--mcc-muted);
+  font-size: 13px;
+}
+.mcc-empty h2 { color: var(--mcc-primary-dark); font-size: 16px; margin: 0 0 6px; }
+.mcc-card.mcc-collapsed .mcc-body,
+.mcc-card.mcc-collapsed .mcc-foot,
+.mcc-card.mcc-collapsed .mcc-code-panel { display: none; }
+.mcc-code-panel { border-bottom: 1px solid var(--mcc-border); }
+.mcc-code-panel pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--mcc-code-bg);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.mcc-head[draggable="true"] { cursor: grab; }
+.mcc-card.mcc-dragging { opacity: 0.5; }
+.mcc-card.mcc-drop-target { outline: 2px dashed var(--mcc-primary); outline-offset: 2px; }
+</style>
+<style>
+/* Page-only chrome (not part of a copied standalone card). */
+#mcc-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: 320px;
+  padding: 7px 14px;
+  background: var(--mcc-surface);
+  color: var(--mcc-text);
+  border: 1px solid var(--mcc-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(31, 35, 40, 0.18);
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+#mcc-toast.mcc-visible { opacity: 1; }
+</style>
+</head>
+<body>
+<!--
+Card specs for this deck. Replace the JSON array below with one object per
+card: { "kind": "<kind>", ...options }. Valid kinds: tabs, table, chart,
+form, show-hide, list, document, video. The option shapes per kind are
+documented in README.md next to this file. Inside JSON strings, write a
+literal "</script>" as "<\/script>" so the block survives HTML parsing.
+-->
+<script id="mcc-card-specs" type="application/json">
+[]
+</script>
+<header class="mcc-deck-bar">
+  <div>
+    <span class="mcc-deck-brand">Chat Cards</span>
+    <span class="mcc-deck-count" id="mcc-count"></span>
+  </div>
+  <div class="mcc-tools">
+    <button type="button" class="mcc-btn" id="mcc-theme-btn" title="Toggle light/dark theme">&#x263E;</button>
+  </div>
+</header>
+<div class="mcc-empty" id="mcc-empty">
+  <h2>No cards yet</h2>
+  <p>This deck's card spec block is empty.<br>Ask Claude to fill it with tab, table, chart, form,<br>show/hide, list, document, or video cards.</p>
+</div>
+<main id="mcc-deck"></main>
+<div id="mcc-tooltip" role="tooltip"></div>
+<div id="mcc-menu"></div>
+<div id="mcc-toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ==== Card building core ===================================================
+  // Dependency-free string logic: escaping, a rebuild-only HTML sanitizer, a
+  // small markdown renderer, SVG charts, and one builder per card kind. It
+  // mirrors extension/github/cards-core.mjs; keep the two in sync.
+
+  // ---------------------------------------------------------------------------
 // Escaping and small string helpers
 // ---------------------------------------------------------------------------
 
@@ -25,22 +442,22 @@ const HTML_ESCAPES = {
 const ESCAPE_PATTERN =
   /[<>"']|&(?!#\d{1,7};|#[xX][0-9a-fA-F]{1,6};|[a-zA-Z][a-zA-Z0-9]{1,31};)/g;
 
-export function escapeHtml(value) {
+function escapeHtml(value) {
   return String(value ?? "").replace(ESCAPE_PATTERN, (ch) => HTML_ESCAPES[ch]);
 }
 
 let uidCounter = 0;
 
-export function uid(prefix = "mcc") {
+function uid(prefix = "mcc") {
   uidCounter += 1;
   return `${prefix}-${Date.now().toString(36)}-${uidCounter.toString(36)}`;
 }
 
-export function escapeRegExp(value) {
+function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function isHttpUrl(value) {
+function isHttpUrl(value) {
   try {
     const url = new URL(value);
     return url.protocol === "http:" || url.protocol === "https:";
@@ -49,33 +466,33 @@ export function isHttpUrl(value) {
   }
 }
 
-export function looksLikeUrl(value) {
+function looksLikeUrl(value) {
   return /^https?:\/\/\S+$/i.test(String(value ?? "").trim());
 }
 
-export function isDataUrlOfType(value, type) {
+function isDataUrlOfType(value, type) {
   return new RegExp(`^data:${type}/[a-z0-9.+-]+\\s*[;,]`, "i").test(String(value ?? "").trim());
 }
 
-export function isBlobUrl(value) {
+function isBlobUrl(value) {
   return /^blob:\S+$/i.test(String(value ?? "").trim());
 }
 
 // Sources a <video>/<audio> element can actually play inside a card.
-export function isPlayableMediaUrl(value) {
+function isPlayableMediaUrl(value) {
   const v = String(value ?? "").trim();
   return isHttpUrl(v) || isDataUrlOfType(v, "video") || isDataUrlOfType(v, "audio") || isBlobUrl(v);
 }
 
 // Sources an <img> or a video poster can display inside a card.
-export function isDisplayableImageUrl(value) {
+function isDisplayableImageUrl(value) {
   const v = String(value ?? "").trim();
   return isHttpUrl(v) || isDataUrlOfType(v, "image") || isBlobUrl(v);
 }
 
 // Convert plain text to paragraph markup: blank lines separate paragraphs,
 // single newlines become <br>.
-export function textToParagraphs(text) {
+function textToParagraphs(text) {
   const blocks = String(text ?? "")
     .split(/\n{2,}/)
     .map((block) => block.trim())
@@ -112,7 +529,11 @@ const SANITIZE_VOID_TAGS = new Set(["br", "hr", "img"]);
 // missing here, or failing its validator, is dropped.
 const SAFE_CLASS_PATTERN = /^[a-zA-Z0-9_ -]*$/;
 const SAFE_ATTR_RULES = {
-  "*": { class: (v) => SAFE_CLASS_PATTERN.test(v), title: () => true },
+  "*": {
+    class: (v) =>
+      SAFE_CLASS_PATTERN.test(v) && !v.split(/\s+/).some((className) => className.startsWith("mcc-")),
+    title: () => true,
+  },
   a: { href: (v) => isHttpUrl(v.trim()) },
   img: {
     src: (v) => isDisplayableImageUrl(v),
@@ -158,7 +579,7 @@ function rebuildTag(name, attrText) {
 
 // Strip active content from caller-supplied HTML so it can be embedded in a
 // card. Unknown or malformed tags render as visible literal text.
-export function sanitizeHtml(html) {
+function sanitizeHtml(html) {
   const segments = String(html ?? "").split(/(<[^>]*>)/);
   const openStack = [];
   let out = "";
@@ -253,7 +674,7 @@ function prepareTerms(terms) {
 // another. Regions that are not visible prose (attributes, <title>, <script>,
 // <style>, code samples, and text already inside an .mcc-term span) are
 // skipped outright.
-export function wrapTermsInHtml(html, terms, options = {}) {
+function wrapTermsInHtml(html, terms, options = {}) {
   const maxPerTerm = options.maxPerTerm ?? DEFAULT_MAX_PER_TERM;
   const maxTotal = options.maxTotal ?? DEFAULT_MAX_TOTAL;
   const prepared = prepareTerms(terms ?? []);
@@ -325,7 +746,7 @@ export function wrapTermsInHtml(html, terms, options = {}) {
 const CANDIDATE_DELIMITERS = ["\t", "|", ";", ","];
 
 // Pick the first candidate delimiter that appears on most non-empty lines.
-export function detectCellDelimiter(lines) {
+function detectCellDelimiter(lines) {
   if (lines.length === 0) return null;
   const threshold = Math.max(1, Math.ceil(lines.length * 0.6));
   for (const delimiter of CANDIDATE_DELIMITERS) {
@@ -336,13 +757,13 @@ export function detectCellDelimiter(lines) {
 }
 
 // Pad or trim header titles to exactly `count` columns.
-export function balanceHeaders(headers, count) {
+function balanceHeaders(headers, count) {
   const out = headers.slice(0, count).map((h) => h.trim());
   while (out.length < count) out.push(`Column ${out.length + 1}`);
   return out;
 }
 
-export function textToTable(text, options = {}) {
+function textToTable(text, options = {}) {
   const rowDelimiter = options.rowDelimiter ?? "\n";
   const lines = String(text ?? "")
     .split(rowDelimiter)
@@ -389,7 +810,7 @@ export function textToTable(text, options = {}) {
 }
 
 // Ensure explicit row data is rectangular, padding short rows with blanks.
-export function normalizeRows(rows, headers = []) {
+function normalizeRows(rows, headers = []) {
   const width = Math.max(1, headers.length, ...rows.map((row) => row.length));
   const balanced = rows.map((row) => {
     const cells = row.slice(0, width).map((cell) => String(cell ?? ""));
@@ -506,7 +927,7 @@ function renderList(lines, start) {
 }
 
 // Render a markdown fragment to card-styled HTML (no section folding).
-export function renderMarkdownFragment(markdown) {
+function renderMarkdownFragment(markdown) {
   const lines = String(markdown ?? "").replace(/\r\n?/g, "\n").split("\n");
   const parts = [];
   let paragraph = [];
@@ -611,7 +1032,7 @@ export function renderMarkdownFragment(markdown) {
 // Parse a markdown document for the document card: the first H1
 // becomes the title, and the body splits into sections on H2 headings (the
 // content before the first H2 is the intro section with a null heading).
-export function parseMarkdownDocument(markdown) {
+function parseMarkdownDocument(markdown) {
   const source = String(markdown ?? "").replace(/\r\n?/g, "\n");
   const lines = source.split("\n");
   let title;
@@ -711,7 +1132,7 @@ const STEP_MANTISSAS = [1, 2, 2.5, 5];
 // intervals, picking the SMALLEST readable step that fits rather than slicing
 // the range into a fixed number of equal parts. Integer data is additionally
 // held to an integer step, so a 1-5 rating scale reads 0, 1, 2, 3, 4, 5.
-export function niceScale(maxValue, maxTicks = 6, integerData = false) {
+function niceScale(maxValue, maxTicks = 6, integerData = false) {
   if (!(maxValue > 0) || !Number.isFinite(maxValue)) return { max: 1, step: 1, ticks: [0, 1] };
 
   let step = 0;
@@ -777,7 +1198,7 @@ function axisAndGrid(scale, plotWidth, plotHeight) {
 // Break a label across at most maxLines lines without splitting words. A word
 // too long to fit on its own line is left alone rather than hyphenated; the
 // full text is always reachable from the <title> either way.
-export function wrapLabel(label, maxChars, maxLines) {
+function wrapLabel(label, maxChars, maxLines) {
   const words = label.split(/\s+/).filter((word) => word.length > 0);
   if (words.length === 0) return [label];
   const lines = [];
@@ -1057,7 +1478,7 @@ function richContent(part, what) {
 // Card builders
 // ---------------------------------------------------------------------------
 
-export function buildTabCard(options) {
+function buildTabCard(options) {
   const title = requireTitle(options);
   const tabs = Array.isArray(options.tabs) ? options.tabs : [];
   if (tabs.length === 0) throw new Error("Provide at least one tab.");
@@ -1115,7 +1536,7 @@ function renderTableCell(value, columnIndex, options) {
   return escapeHtml(value);
 }
 
-export function tableDataToHtml(data, options = {}) {
+function tableDataToHtml(data, options = {}) {
   const caption = options.caption ? `<caption>${escapeHtml(options.caption)}</caption>` : "";
   const thead =
     data.headers.length > 0
@@ -1129,7 +1550,7 @@ ${tbody}
 </tbody></table></div>`;
 }
 
-export function buildTableCard(options) {
+function buildTableCard(options) {
   const title = requireTitle(options);
   if ((!options.rows || options.rows.length === 0) && !options.text) {
     throw new Error("Provide either rows or text.");
@@ -1161,7 +1582,7 @@ ${tableDataToHtml(data, options)}
   );
 }
 
-export function buildChartCard(options) {
+function buildChartCard(options) {
   const title = requireTitle(options);
   const type = options.type;
   if (!["bar", "line", "pie", "donut"].includes(type)) {
@@ -1177,7 +1598,7 @@ export function buildChartCard(options) {
     // The scale, bar geometry, and line placement all assume values from 0
     // up. A negative or non-numeric value would render as a clamped bar or
     // an off-canvas point, silently misrepresenting the data, so it is
-    // rejected here (and the action schema says the same) instead.
+    // rejected here instead.
     for (const s of options.series ?? []) {
       for (const value of Array.isArray(s?.values) ? s.values : []) {
         if (!Number.isFinite(value) || value < 0) {
@@ -1299,7 +1720,7 @@ ${choices}${help}</fieldset>`;
 <input type="${escapeHtml(type)}" id="${fieldId}" name="${name}" value="${value}"${placeholder}${required}>${help}</div>`;
 }
 
-export function buildFormCard(options) {
+function buildFormCard(options) {
   const title = requireTitle(options);
   const fields = Array.isArray(options.fields) ? options.fields : [];
   if (fields.length === 0) throw new Error("Provide at least one field.");
@@ -1320,7 +1741,7 @@ ${fieldHtml}
 </div>
 <p class="mcc-form-status" role="status" aria-live="polite"></p>
 <div class="mcc-form-fallback">
-<p class="mcc-help">If the agent did not pick this up automatically, copy the text below and send it as your next message.</p>
+<p class="mcc-help">Copy the text below and send it to Claude as your next message.</p>
 <textarea readonly></textarea>
 <button type="button" class="mcc-btn mcc-copy-prompt">Copy prompt</button>
 </div>
@@ -1339,11 +1760,11 @@ ${fieldHtml}
       draggable: false,
     },
     `Created form card "${title}" with ${fields.length} field(s). ` +
-      "Submitting it sends the values back to the conversation as the next prompt.",
+      "Submitting it prepares a prompt for the conversation.",
   );
 }
 
-export function buildRevealCard(options) {
+function buildRevealCard(options) {
   const title = requireTitle(options);
   const sections = Array.isArray(options.sections) ? options.sections : [];
   if (sections.length === 0) throw new Error("Provide at least one section.");
@@ -1391,7 +1812,7 @@ function renderListItems(items) {
   return `<ol class="mcc-seq">\n${lis}\n</ol>`;
 }
 
-export function buildListCard(options) {
+function buildListCard(options) {
   const title = requireTitle(options);
   const items = Array.isArray(options.items) ? options.items : [];
   if (items.length === 0) throw new Error("Provide at least one item.");
@@ -1415,7 +1836,7 @@ ${renderListItems(items)}
   );
 }
 
-export function buildMarkdownCard(options) {
+function buildMarkdownCard(options) {
   const markdown = String(options.markdown ?? "");
   if (markdown.trim().length === 0) throw new Error("Provide markdown content.");
   const doc = parseMarkdownDocument(markdown);
@@ -1447,7 +1868,7 @@ ${bodyHtml}
   );
 }
 
-export function buildVideoCard(options) {
+function buildVideoCard(options) {
   const title = requireTitle(options);
   const src = String(options.src ?? "").trim();
   if (!isPlayableMediaUrl(src)) {
@@ -1485,8 +1906,8 @@ ${link}
   );
 }
 
-// Dispatch table used by extension.mjs for create and update actions.
-export const CARD_BUILDERS = {
+// Dispatch table mapping card kinds to their builders.
+const CARD_BUILDERS = {
   tabs: buildTabCard,
   table: buildTableCard,
   chart: buildChartCard,
@@ -1497,10 +1918,474 @@ export const CARD_BUILDERS = {
   video: buildVideoCard,
 };
 
-export function buildCard(kind, options) {
+function buildCard(kind, options) {
   const builder = CARD_BUILDERS[kind];
   if (!builder) {
     throw new Error(`Unknown card kind "${kind}". Valid kinds: ${Object.keys(CARD_BUILDERS).join(", ")}.`);
   }
   return builder(options);
 }
+
+  // ==== Deck runtime =========================================================
+  // Renders the spec block into the deck and wires the page interactions.
+  // This page has no live agent channel: form submissions and context actions
+  // produce prompts the user copies into the conversation themselves, and
+  // removing or reordering cards only changes this page.
+
+  var deck = document.getElementById("mcc-deck");
+  var emptyState = document.getElementById("mcc-empty");
+  var countEl = document.getElementById("mcc-count");
+  var tooltip = document.getElementById("mcc-tooltip");
+  var menu = document.getElementById("mcc-menu");
+  var toastEl = document.getElementById("mcc-toast");
+  var configs = {}; // cardId -> runtime config (kind, dwellMs, contextActions, draggable)
+
+  // ---- theme ---------------------------------------------------------------
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    var btn = document.getElementById("mcc-theme-btn");
+    btn.innerHTML = theme === "dark" ? "&#x2600;&#xFE0E;" : "&#x263E;";
+  }
+  var storedTheme = null;
+  try { storedTheme = localStorage.getItem("mcc-theme"); } catch (e) {}
+  // A host may stamp data-theme on the root before this runs; a choice made
+  // with the page's own toggle still wins.
+  var hostTheme = document.documentElement.getAttribute("data-theme");
+  applyTheme(storedTheme || hostTheme ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+  document.getElementById("mcc-theme-btn").addEventListener("click", function () {
+    var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next);
+    try { localStorage.setItem("mcc-theme", next); } catch (e) {}
+  });
+
+  // ---- toast ---------------------------------------------------------------
+  var toastTimer = null;
+  function toast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add("mcc-visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove("mcc-visible"); }, 2200);
+  }
+
+  // ---- deck ----------------------------------------------------------------
+  function updateChrome() {
+    var count = deck.children.length;
+    countEl.textContent = count === 0 ? "" : "- " + count + " card" + (count === 1 ? "" : "s");
+    emptyState.style.display = count === 0 ? "" : "none";
+  }
+
+  function mountCard(card) {
+    configs[card.id] = card.config || {};
+    var holder = document.createElement("template");
+    holder.innerHTML = card.articleHtml.trim();
+    var article = holder.content.firstElementChild;
+    if (!article) return;
+    deck.appendChild(article);
+    updateChrome();
+  }
+
+  function removeCard(cardId) {
+    var el = deck.querySelector('[data-card-id="' + CSS.escape(cardId) + '"]');
+    if (el) el.remove();
+    delete configs[cardId];
+    updateChrome();
+  }
+
+  // A spec that cannot be built renders as a visible error card instead of
+  // disappearing silently.
+  function errorCard(spec, message) {
+    var id = uid("card");
+    var kind = spec && spec.kind ? String(spec.kind) : "spec";
+    var articleHtml = '<article class="mcc-card" data-card-id="' + escapeHtml(id) + '">' +
+      '<header class="mcc-head"><div><h1>Card spec error</h1>' +
+      '<p class="mcc-subtitle">' + escapeHtml(kind) + '</p></div></header>' +
+      '<div class="mcc-body"><p>' + escapeHtml(message) + '</p>' +
+      '<p class="mcc-help">Ask Claude to correct this card spec and update the artifact.</p></div>' +
+      '</article>';
+    return {
+      id: id,
+      kind: "error",
+      title: "Card spec error",
+      articleHtml: articleHtml,
+      config: { id: id, kind: "error", contextActions: [], draggable: false },
+    };
+  }
+
+  function buildDeck() {
+    var el = document.getElementById("mcc-card-specs");
+    var text = el ? el.textContent.trim() : "";
+    var specs = [];
+    if (text.length > 0) {
+      try {
+        var parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          specs = parsed;
+        } else {
+          mountCard(errorCard(null, "The card spec block must be a JSON array of card spec objects."));
+        }
+      } catch (e) {
+        mountCard(errorCard(null, "The card spec block is not valid JSON: " + e.message));
+      }
+    }
+    specs.forEach(function (spec) {
+      try {
+        mountCard(buildCard(spec && spec.kind, spec || {}));
+      } catch (e) {
+        mountCard(errorCard(spec, e && e.message ? e.message : String(e)));
+      }
+    });
+    updateChrome();
+  }
+
+  buildDeck();
+
+  // ---- copy helpers --------------------------------------------------------
+  function flashButton(button, text) {
+    var original = button.textContent;
+    button.textContent = text;
+    setTimeout(function () { button.textContent = original; }, 1400);
+  }
+
+  function copyText(text, button) {
+    var done = function () { if (button) flashButton(button, "Copied ✓"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+    } else {
+      fallbackCopy(text);
+      done();
+    }
+  }
+
+  function fallbackCopy(text) {
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    area.remove();
+  }
+
+  // Standalone document for "Copy card": the page theme plus the card article
+  // plus a minimal runtime for tabs, reveals, and code copying.
+  var MINI_RUNTIME =
+    'document.addEventListener("click",function(ev){' +
+    'var t=ev.target.closest(".mcc-tab");' +
+    'if(t){var list=t.closest("[role=tablist]");var sec=list.parentElement;' +
+    'list.querySelectorAll(".mcc-tab").forEach(function(b){b.setAttribute("aria-selected",b===t?"true":"false");});' +
+    'sec.querySelectorAll(".mcc-panel").forEach(function(p){p.hidden=p.id!==t.getAttribute("aria-controls");});return;}' +
+    'var x=ev.target.closest("[data-mcc-expand]");' +
+    'if(x){var open=x.getAttribute("data-mcc-expand")==="all";' +
+    'x.closest(".mcc-body").querySelectorAll("details.mcc-reveal").forEach(function(d){d.open=open;});return;}' +
+    'var c=ev.target.closest(".mcc-copy-code");' +
+    'if(c){var pre=c.closest(".mcc-codewrap").querySelector("pre");' +
+    'if(navigator.clipboard)navigator.clipboard.writeText(pre.textContent);}' +
+    '});';
+
+  function standaloneDocument(article) {
+    var clone = article.cloneNode(true);
+    var tools = clone.querySelector(".mcc-tools");
+    if (tools) tools.remove();
+    var panel = clone.querySelector(".mcc-code-panel");
+    if (panel) panel.remove();
+    clone.classList.remove("mcc-collapsed", "mcc-dragging", "mcc-drop-target");
+    var titleEl = clone.querySelector(".mcc-head h1");
+    // A host may inject its own <style> elements into the page, so the theme
+    // must be looked up by id, never as the first style element.
+    var pageStyle = document.getElementById("mcc-theme").textContent;
+    return "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n" +
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
+      "<title>" + escapeHtml(titleEl ? titleEl.textContent : "Card") + "</title>\n" +
+      "<style>" + pageStyle + "</style>\n</head>\n<body>\n" +
+      clone.outerHTML +
+      "\n<script>" + MINI_RUNTIME + "<\/script>\n</body>\n</html>";
+  }
+
+  function cardSource(article) {
+    var clone = article.cloneNode(true);
+    var panel = clone.querySelector(".mcc-code-panel");
+    if (panel) panel.remove();
+    clone.classList.remove("mcc-collapsed", "mcc-dragging", "mcc-drop-target");
+    return clone.outerHTML;
+  }
+
+  // ---- click handling (event delegation over the whole deck) ---------------
+  document.addEventListener("click", function (event) {
+    var tab = event.target.closest(".mcc-tab");
+    if (tab) {
+      var tablist = tab.closest('[role="tablist"]');
+      var section = tablist.parentElement;
+      tablist.querySelectorAll(".mcc-tab").forEach(function (button) {
+        button.setAttribute("aria-selected", button === tab ? "true" : "false");
+      });
+      section.querySelectorAll(".mcc-panel").forEach(function (p) {
+        p.hidden = p.id !== tab.getAttribute("aria-controls");
+      });
+      return;
+    }
+
+    var expand = event.target.closest("[data-mcc-expand]");
+    if (expand) {
+      var open = expand.getAttribute("data-mcc-expand") === "all";
+      expand.closest(".mcc-body").querySelectorAll("details.mcc-reveal").forEach(function (details) {
+        details.open = open;
+      });
+      return;
+    }
+
+    var copyCode = event.target.closest(".mcc-copy-code");
+    if (copyCode) {
+      var pre = copyCode.closest(".mcc-codewrap").querySelector("pre");
+      copyText(pre.textContent, copyCode);
+      return;
+    }
+
+    var copyCard = event.target.closest(".mcc-copy-card");
+    if (copyCard) {
+      copyText(standaloneDocument(copyCard.closest(".mcc-card")), copyCard);
+      return;
+    }
+
+    var toggleCode = event.target.closest(".mcc-toggle-code");
+    if (toggleCode) {
+      var codeArticle = toggleCode.closest(".mcc-card");
+      var codePanel = codeArticle.querySelector(".mcc-code-panel");
+      if (codePanel) {
+        codePanel.remove();
+      } else {
+        codePanel = document.createElement("div");
+        codePanel.className = "mcc-code-panel";
+        var codePre = document.createElement("pre");
+        codePre.textContent = cardSource(codeArticle);
+        codePanel.appendChild(codePre);
+        codeArticle.querySelector(".mcc-head").insertAdjacentElement("afterend", codePanel);
+      }
+      return;
+    }
+
+    var collapse = event.target.closest(".mcc-toggle-collapse");
+    if (collapse) {
+      var collapseArticle = collapse.closest(".mcc-card");
+      var collapsed = collapseArticle.classList.toggle("mcc-collapsed");
+      collapse.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      return;
+    }
+
+    var remove = event.target.closest(".mcc-remove-card");
+    if (remove) {
+      removeCard(remove.closest(".mcc-card").getAttribute("data-card-id"));
+      return;
+    }
+
+    var copyPrompt = event.target.closest(".mcc-copy-prompt");
+    if (copyPrompt) {
+      copyText(copyPrompt.closest(".mcc-form-fallback").querySelector("textarea").value, copyPrompt);
+    }
+  });
+
+  // ---- forms ---------------------------------------------------------------
+  function collectValues(form) {
+    var data = new FormData(form);
+    var values = {};
+    Array.prototype.forEach.call(form.elements, function (element) {
+      if (!element.name || values[element.name] !== undefined) return;
+      var all = data.getAll(element.name).map(String);
+      values[element.name] = all.join(", ");
+    });
+    return values;
+  }
+
+  function buildPrompt(form, values) {
+    var template = form.getAttribute("data-prompt-template");
+    if (template) {
+      var prompt = template;
+      Object.keys(values).forEach(function (name) {
+        prompt = prompt.split("{{" + name + "}}").join(values[name]);
+      });
+      return prompt;
+    }
+    var title = form.getAttribute("data-card-title") || "Form";
+    var lines = Object.keys(values).map(function (name) {
+      return "- " + name + ": " + values[name];
+    });
+    return 'Form "' + title + '" submitted:\n' + lines.join("\n");
+  }
+
+  // A required multi-checkbox group means "check at least one". HTML cannot
+  // express that natively, so the builder marks the fieldset with
+  // data-mcc-require-one and the first box carries a custom validity that
+  // checkValidity()/reportValidity() surface like any native constraint.
+  function enforceRequiredGroups(form) {
+    var groups = form.querySelectorAll("[data-mcc-require-one]");
+    Array.prototype.forEach.call(groups, function (group) {
+      var boxes = group.querySelectorAll('input[type="checkbox"]');
+      if (boxes.length === 0) return;
+      var satisfied = Array.prototype.some.call(boxes, function (box) { return box.checked; });
+      boxes[0].setCustomValidity(satisfied ? "" : "Select at least one option.");
+    });
+  }
+
+  document.addEventListener("change", function (event) {
+    var form = event.target.form;
+    if (form && event.target.closest("[data-mcc-require-one]")) enforceRequiredGroups(form);
+  });
+
+  document.addEventListener("submit", function (event) {
+    var form = event.target.closest(".mcc-form");
+    if (!form) return;
+    event.preventDefault();
+    enforceRequiredGroups(form);
+    if (!form.checkValidity()) {
+      form.reportValidity();
+      return;
+    }
+    var status = form.querySelector(".mcc-form-status");
+    var fallback = form.querySelector(".mcc-form-fallback");
+    var prompt = buildPrompt(form, collectValues(form));
+    fallback.querySelector("textarea").value = prompt;
+    fallback.classList.add("mcc-visible");
+    status.textContent = "Prompt ready - copy it below and send it to Claude.";
+  });
+
+  // ---- tutor term tooltips -------------------------------------------------
+  var dwellTimer = null;
+
+  function showTooltip(term) {
+    var tip = term.getAttribute("data-tip");
+    if (!tip) return;
+    tooltip.textContent = tip;
+    tooltip.style.display = "block";
+    var rect = term.getBoundingClientRect();
+    var x = Math.min(rect.left, window.innerWidth - tooltip.offsetWidth - 12);
+    var y = rect.bottom + 8;
+    if (y + tooltip.offsetHeight > window.innerHeight) y = rect.top - tooltip.offsetHeight - 8;
+    tooltip.style.left = Math.max(6, x) + "px";
+    tooltip.style.top = Math.max(6, y) + "px";
+    term.setAttribute("aria-describedby", "mcc-tooltip");
+  }
+
+  function hideTooltip() {
+    clearTimeout(dwellTimer);
+    tooltip.style.display = "none";
+    var described = document.querySelectorAll('[aria-describedby="mcc-tooltip"]');
+    Array.prototype.forEach.call(described, function (el) {
+      el.removeAttribute("aria-describedby");
+    });
+  }
+
+  document.addEventListener("mouseover", function (event) {
+    var term = event.target.closest(".mcc-term");
+    if (!term) return;
+    var article = term.closest(".mcc-card");
+    var config = article ? configs[article.getAttribute("data-card-id")] : null;
+    var dwellMs = config && config.dwellMs ? config.dwellMs : 1200;
+    clearTimeout(dwellTimer);
+    dwellTimer = setTimeout(function () { showTooltip(term); }, dwellMs);
+  });
+  document.addEventListener("mouseout", function (event) {
+    if (!event.target.closest || !event.target.closest(".mcc-term")) return;
+    hideTooltip();
+  });
+  // Keyboard access: term spans are focusable (tabindex from the builder).
+  // Focus shows the definition immediately; blur or Escape dismisses it.
+  document.addEventListener("focusin", function (event) {
+    var term = event.target.closest && event.target.closest(".mcc-term");
+    if (!term) return;
+    clearTimeout(dwellTimer);
+    showTooltip(term);
+  });
+  document.addEventListener("focusout", function (event) {
+    if (!event.target.closest || !event.target.closest(".mcc-term")) return;
+    hideTooltip();
+  });
+  document.addEventListener("scroll", function () {
+    hideTooltip();
+  }, true);
+
+  // ---- context menu (per-card model-defined actions) -----------------------
+  function hideMenu() { menu.style.display = "none"; menu.innerHTML = ""; }
+
+  document.addEventListener("contextmenu", function (event) {
+    var article = event.target.closest(".mcc-card");
+    if (!article) { hideMenu(); return; }
+    var config = configs[article.getAttribute("data-card-id")] || {};
+    var actions = config.contextActions || [];
+    event.preventDefault();
+    var selection = String(window.getSelection() || "");
+    menu.innerHTML = "";
+    actions.forEach(function (action) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = action.label;
+      button.addEventListener("click", function () {
+        hideMenu();
+        copyText(action.prompt.split("{{selection}}").join(selection), null);
+        toast("Prompt copied - paste it into the chat");
+      });
+      menu.appendChild(button);
+    });
+    if (actions.length > 0) {
+      var sep = document.createElement("div");
+      sep.className = "mcc-menu-sep";
+      menu.appendChild(sep);
+    }
+    var copyItem = document.createElement("button");
+    copyItem.type = "button";
+    copyItem.textContent = "Copy card";
+    copyItem.addEventListener("click", function () {
+      hideMenu();
+      copyText(standaloneDocument(article), null);
+      toast("Card HTML copied");
+    });
+    menu.appendChild(copyItem);
+    menu.style.display = "block";
+    var x = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8);
+    var y = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8);
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+  });
+  document.addEventListener("click", function (event) {
+    if (!event.target.closest("#mcc-menu")) hideMenu();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      hideMenu();
+      hideTooltip();
+    }
+  });
+
+  // ---- drag to reorder cards -----------------------------------------------
+  var draggingCard = null;
+  document.addEventListener("dragstart", function (event) {
+    var head = event.target.closest('.mcc-head[draggable="true"]');
+    if (!head) return;
+    draggingCard = head.closest(".mcc-card");
+    draggingCard.classList.add("mcc-dragging");
+    event.dataTransfer.effectAllowed = "move";
+    // Carry the card HTML in the drag data so dropping outside the page
+    // pastes something meaningful.
+    try {
+      event.dataTransfer.setData("text/html", draggingCard.outerHTML);
+      event.dataTransfer.setData("text/plain", standaloneDocument(draggingCard));
+    } catch (e) {}
+  });
+  document.addEventListener("dragover", function (event) {
+    if (!draggingCard) return;
+    var over = event.target.closest("#mcc-deck > .mcc-card");
+    if (!over || over === draggingCard) return;
+    event.preventDefault();
+    var rect = over.getBoundingClientRect();
+    var after = event.clientY > rect.top + rect.height / 2;
+    deck.insertBefore(draggingCard, after ? over.nextSibling : over);
+  });
+  document.addEventListener("dragend", function () {
+    if (!draggingCard) return;
+    draggingCard.classList.remove("mcc-dragging");
+    draggingCard = null;
+  });
+})();
+</script>
+</body>
+</html>

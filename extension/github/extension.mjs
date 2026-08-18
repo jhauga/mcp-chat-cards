@@ -11,7 +11,15 @@
 // it, so the process holds no sockets while no panel is showing.
 import http from "node:http";
 import crypto from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,22 +72,151 @@ function stateDirectory() {
   );
 }
 
-const STATE_FILE = path.join(stateDirectory(), "state.json");
+// One file per deck rather than one shared document. Several extension
+// processes (parallel Copilot sessions) share this directory, and each one
+// only knows about the decks it holds open plus the snapshot it read at
+// startup. A process rewriting a shared document would flush that stale
+// snapshot over decks another process had since changed, and the two would
+// race on a single temp path. A file per deck means a process only ever
+// replaces the decks it owns, through a temp name scoped to its own pid.
+//
+// Every file also records which process has that deck open, so the other
+// cross-process question, whether a file may be deleted to hold the
+// directory to its cap, has an answer that does not assume one process.
+const DECKS_DIR = path.join(stateDirectory(), "decks");
+// The single-document layout this replaced: imported once, then removed.
+const LEGACY_STATE_FILE = path.join(stateDirectory(), "state.json");
 
-function loadPersistedDecks() {
-  try {
-    const parsed = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-    if (parsed?.version === STATE_VERSION && parsed.instances && typeof parsed.instances === "object") {
-      return parsed.instances;
-    }
-  } catch {
-    // No state file yet, or an unreadable one: start with an empty store.
-  }
-  return {};
+// Stamped into every deck this process holds open, and cleared on the way
+// out. The host name travels with the pid because a home directory can be
+// shared between machines, where a pid from one says nothing about another.
+const DECK_OWNER = { host: os.hostname(), pid: process.pid };
+
+// Canvas instance ids come from the host, so hash rather than trust one as a
+// path segment. The id itself is stored inside the file.
+function deckFile(instanceId) {
+  const name = crypto.createHash("sha256").update(instanceId).digest("hex").slice(0, 32);
+  return path.join(DECKS_DIR, `${name}.json`);
 }
 
+// Is the process that stamped a deck still running? Signal 0 asks the OS
+// whether a pid exists without touching the process. An owner recorded on
+// another machine cannot be checked at all, so it counts as running: holding
+// a deck longer than the cap only costs disk, while deleting a live one
+// costs the user cards a canvas is still showing.
+function ownerIsRunning(owner) {
+  if (!owner || typeof owner !== "object") return false;
+  if (owner.host !== DECK_OWNER.host) return true;
+  if (!Number.isInteger(owner.pid) || owner.pid <= 0) return false;
+  try {
+    process.kill(owner.pid, 0);
+    return true;
+  } catch (error) {
+    // ESRCH: the process is gone. EPERM: it is there, under another user.
+    return error?.code === "EPERM";
+  }
+}
+
+function readDeckOwner(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"))?.owner ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Replace one deck's file atomically. The temp name carries this process's
+// pid, so two processes writing this directory can never rename over each
+// other's half-written file. Pass owner as null to publish a deck this
+// process is no longer holding open.
+function writeDeckSync(instanceId, deck, owner = DECK_OWNER) {
+  const target = deckFile(instanceId);
+  const tmp = `${target}.${process.pid}.tmp`;
+  try {
+    mkdirSync(DECKS_DIR, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      tmp,
+      JSON.stringify({
+        version: STATE_VERSION,
+        instanceId,
+        owner: owner ?? null,
+        sessionId: deck.sessionId ?? null,
+        cards: deck.cards ?? [],
+        submissions: deck.submissions ?? [],
+        updatedAt: deck.updatedAt ?? new Date().toISOString(),
+      }),
+      { mode: 0o600 },
+    );
+    renameSync(tmp, target);
+  } catch {
+    // Persistence is best effort; the live deck is unaffected.
+    try {
+      rmSync(tmp, { force: true });
+    } catch {}
+  }
+}
+
+function removeDeckSync(instanceId) {
+  try {
+    rmSync(deckFile(instanceId), { force: true });
+  } catch {}
+}
+
+function loadPersistedDecks() {
+  const decks = {};
+  let names;
+  try {
+    names = readdirSync(DECKS_DIR);
+  } catch {
+    return decks; // Nothing persisted yet.
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(path.join(DECKS_DIR, name), "utf8"));
+      if (parsed?.version !== STATE_VERSION || typeof parsed.instanceId !== "string") continue;
+      // A deck another running process has open belongs to that process:
+      // recalling it here would put the same cards in two canvases and have
+      // both flush copies of it.
+      if (ownerIsRunning(parsed.owner)) continue;
+      decks[parsed.instanceId] = {
+        sessionId: parsed.sessionId ?? null,
+        cards: Array.isArray(parsed.cards) ? parsed.cards : [],
+        submissions: Array.isArray(parsed.submissions) ? parsed.submissions : [],
+        updatedAt: parsed.updatedAt,
+      };
+    } catch {
+      // One unreadable file must not cost the user the other decks.
+    }
+  }
+  return decks;
+}
+
+// Carry decks written by the single-document layout over to per-deck files,
+// then drop that file so this runs at most once. They arrive unowned: no
+// process is holding any of them open yet.
+function migrateLegacyState() {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(LEGACY_STATE_FILE, "utf8"));
+  } catch {
+    return; // Nothing left from the old layout.
+  }
+  if (parsed?.version === STATE_VERSION && parsed.instances && typeof parsed.instances === "object") {
+    for (const [instanceId, deck] of Object.entries(parsed.instances)) {
+      if (deck && typeof deck === "object") writeDeckSync(instanceId, deck, null);
+    }
+  }
+  try {
+    rmSync(LEGACY_STATE_FILE, { force: true });
+  } catch {}
+}
+
+migrateLegacyState();
+
 // instanceId -> { sessionId, cards, submissions, updatedAt } from earlier
-// runs, not yet claimed by an in-memory instance this run.
+// runs or an exited process, not yet claimed by an in-memory instance this
+// run.
 const persistedDecks = loadPersistedDecks();
 
 let persistTimer = null;
@@ -95,34 +232,68 @@ function schedulePersist() {
 }
 
 // Synchronous so the process "exit" event and the shutdown path can use it.
-function flushStateSync() {
+// Only the decks this process owns are written: a deck belonging to another
+// process, or to an earlier run, stays on disk exactly as its owner left it.
+function flushStateSync(owner = DECK_OWNER) {
   if (persistTimer) {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
-  const decks = { ...persistedDecks };
+  const owned = new Set();
   for (const [instanceId, instance] of instances) {
-    decks[instanceId] = {
-      sessionId: instance.sessionId ?? null,
-      cards: instance.cards,
-      submissions: instance.submissions,
-      updatedAt: instance.updatedAt ?? new Date().toISOString(),
-    };
+    writeDeckSync(
+      instanceId,
+      {
+        sessionId: instance.sessionId ?? null,
+        cards: instance.cards,
+        submissions: instance.submissions,
+        updatedAt: instance.updatedAt ?? new Date().toISOString(),
+      },
+      owner,
+    );
+    owned.add(path.basename(deckFile(instanceId)));
   }
-  const kept = Object.fromEntries(
-    Object.entries(decks)
-      .sort(
-        ([, a], [, b]) =>
-          (Date.parse(b?.updatedAt ?? "") || 0) - (Date.parse(a?.updatedAt ?? "") || 0),
-      )
-      .slice(0, MAX_PERSISTED_DECKS),
-  );
+  pruneDeckFiles(owned);
+}
+
+// The last write of a run: the same state with no owner stamp, so the next
+// run can recall these decks and prune them normally.
+function releaseDecksSync() {
+  flushStateSync(null);
+}
+
+// Hold the directory to MAX_PERSISTED_DECKS, newest first. Files are ranked
+// by mtime rather than by the updatedAt inside them: a deck's file is
+// rewritten whenever it changes, so mtime gives the same order without
+// reading every file, and it stays right for decks other processes own.
+function pruneDeckFiles(owned) {
+  let names;
   try {
-    mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-    writeFileSync(`${STATE_FILE}.tmp`, JSON.stringify({ version: STATE_VERSION, instances: kept }));
-    renameSync(`${STATE_FILE}.tmp`, STATE_FILE);
+    names = readdirSync(DECKS_DIR).filter((name) => name.endsWith(".json"));
   } catch {
-    // Persistence is best effort; the live deck is unaffected.
+    return;
+  }
+  if (names.length <= MAX_PERSISTED_DECKS) return;
+  const ranked = names
+    .map((name) => {
+      let mtimeMs = 0;
+      try {
+        mtimeMs = statSync(path.join(DECKS_DIR, name)).mtimeMs;
+      } catch {}
+      return { name, mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const { name } of ranked.slice(MAX_PERSISTED_DECKS)) {
+    // A deck someone still has open outranks the cap: dropping its file
+    // would lose cards a canvas is still showing. The set covers this
+    // process, the owner stamp covers every other one, so only a deck no
+    // running process claims is deleted here.
+    if (owned.has(name)) continue;
+    const file = path.join(DECKS_DIR, name);
+    if (ownerIsRunning(readDeckOwner(file))) continue;
+    try {
+      rmSync(file, { force: true });
+    } catch {}
   }
 }
 
@@ -151,6 +322,10 @@ function takePersistedDeck(instanceId, sessionId) {
   if (!key) return null;
   const deck = persistedDecks[key];
   delete persistedDecks[key];
+  // A deck recalled under a different canvas instance id is written back
+  // out under that id, so drop the file it came from: leaving it would let
+  // the same deck be recalled a second time.
+  if (key !== instanceId) removeDeckSync(key);
   return deck;
 }
 
@@ -766,7 +941,13 @@ function readJsonBody(req) {
   });
 }
 
-async function handleCanvasRequest(req, res) {
+// A panel's server answers for exactly one canvas instance: the id is
+// bound when the server is created rather than taken from the request.
+// Ports are recycled as panels close and reopen, so a page orphaned by an
+// earlier panel can reach a later panel's server; its token is still in
+// memory and would otherwise let it go on reading and changing its old
+// deck through a port that now belongs to someone else.
+async function handleCanvasRequest(req, res, servedInstanceId) {
   let url;
   try {
     url = new URL(req.url, `http://${req.headers.host ?? "127.0.0.1"}`);
@@ -777,7 +958,7 @@ async function handleCanvasRequest(req, res) {
   }
   const instanceId = url.searchParams.get("instance");
   const token = url.searchParams.get("token");
-  if (!instanceId || !validateToken(instanceId, token)) {
+  if (instanceId !== servedInstanceId || !validateToken(instanceId, token)) {
     res.writeHead(403);
     res.end("Forbidden");
     return;
@@ -786,7 +967,10 @@ async function handleCanvasRequest(req, res) {
 
   try {
     if (req.method === "GET" && url.pathname === "/") {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Referrer-Policy": "no-referrer",
+      });
       res.end(CANVAS_PAGE);
       return;
     }
@@ -933,7 +1117,7 @@ async function startCanvasServer(instanceId) {
   const existing = canvasServers.get(instanceId);
   if (existing) return existing;
 
-  const server = http.createServer(handleCanvasRequest);
+  const server = http.createServer((req, res) => handleCanvasRequest(req, res, instanceId));
   const sockets = new Set();
   // Connections are tracked for teardown and unref'd on arrival so an open
   // keep-alive or SSE socket can never keep this process alive by itself.
@@ -995,7 +1179,7 @@ let shuttingDown = false;
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  flushStateSync();
+  releaseDecksSync();
   for (const clients of sseClients.values()) {
     for (const res of clients) {
       try {
@@ -1023,7 +1207,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGBREAK"]) {
   } catch {}
 }
 // If the event loop drains naturally instead, still write the deck out.
-process.on("exit", flushStateSync);
+process.on("exit", releaseDecksSync);
 
 // Nothing refs the event loop until the session join wires up stdio, so
 // hold it open across the join, then hand that job to the stdio pipe.

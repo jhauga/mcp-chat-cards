@@ -64,6 +64,32 @@ export interface PartInfo {
   totalParts: number;
 }
 
+// Split state as a card result carries it. The title suffix ("part 1 of 2")
+// and the continuation sentence are for humans and for the model reading the
+// summary; a consumer that does not scrape either of those needs a field it
+// can read to know it is holding a partial payload, or it silently loses the
+// content that was withheld.
+export interface CardParts {
+  current: number;
+  total: number;
+  hasMore: boolean;
+}
+
+// What a card that cannot split reports. Every card result carries parts, so
+// a caller can write one completeness check - `if (result.parts.hasMore)` -
+// that works on every card type instead of throwing on the ones that never
+// split. That is exactly the silent-partial-content bug the field exists to
+// prevent, so the contract is unconditional rather than nearly so.
+export const SINGLE_PART: CardParts = { current: 1, total: 1, hasMore: false };
+
+export function cardParts(info: PartInfo): CardParts {
+  return {
+    current: info.part,
+    total: info.totalParts,
+    hasMore: info.part < info.totalParts,
+  };
+}
+
 export function partTitle(baseTitle: string, info: PartInfo): string {
   return info.totalParts > 1 ? `${baseTitle} (part ${info.part} of ${info.totalParts})` : baseTitle;
 }

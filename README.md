@@ -97,8 +97,8 @@ for hosts that support MCP UI resources, cards render as sandboxed iframes.
 | `create_table_card` | HTML table from rows or raw text with delimiter detection |
 | `create_chart_card` | SVG bar, line, pie, or donut chart with data table |
 | `create_form_card` | Form whose submission becomes the next conversation prompt |
-| `create_video_card` | HTML video player for a short clip (direct file URL, `data:video/*`, or `blob:`) |
-| `create_reveal_card` | Collapsible show/hide sections |
+| `create_video_card` | HTML video player for a short clip (direct file URL, `data:video/*`, or `blob:`; streaming platform pages are rejected) |
+| `create_reveal_card` | Collapsible show/hide sections (text, HTML, or code per section) |
 | `create_list_card` | Nested sequential outline (1., 1.1., 1.1.1.) |
 | `create_markdown_card` | Render a markdown document (content or file path) as one card |
 | `create_code_tour_card` | Render a project (zip path or explicit files) as file tabs |
@@ -251,10 +251,23 @@ the conversation as well.
 ### Text fields are plain text
 
 Every text field a tool accepts - titles, labels, cell values, tutor tips - is plain text
-and is escaped by the server. Callers must not pre-escape: pass `Predict, Spot & Fix`, not
-`Predict, Spot &amp; Fix`. As a safety net the escaper leaves a well-formed character
-reference alone rather than turning `&amp;` into `&amp;amp;`, so a pre-escaped string still
-displays correctly; `<`, `>`, `"`, and `'` are always escaped regardless.
+and is escaped by the server exactly once. Callers must not pre-escape: pass
+`Predict, Spot & Fix`, not `Predict, Spot &amp; Fix`.
+
+Input is never decoded first, in any field. A caller who does pass `&amp;` gets a card
+that displays the six characters `&amp;`, because that is what a guide documenting HTML,
+escaping, or templating means to show its reader. The rule is the same everywhere, so the
+same string renders identically in a table cell, a tab, a markdown table, and a code
+sample.
+
+Raw HTML is only honoured in fields named `html` (`create_tab_card` and
+`create_reveal_card` sections), where it is sanitized: scripts, event handlers, frames,
+forms, and dangerous URLs are stripped while formatting such as `<b>` and `<i>` is kept.
+Everywhere else - including HTML written inside a `create_markdown_card` document - tags
+render as literal text, so use markdown syntax for formatting there. Escaped block-level
+HTML is wrapped in the paragraph the markdown structure implies rather than dropped
+between siblings as loose text, and HTML comments are dropped rather than shown, since a
+`<!-- markdownlint-disable -->` directive is not prose.
 
 ### Where paths resolve
 
@@ -279,7 +292,21 @@ same goes for Windows paths sent to a POSIX server and for unexpanded `~/` paths
   notifies the host so the model can follow up while the user explores. Each term is
   marked once per card (longest term wins where two overlap), duplicates in the term list
   are ignored, and marking never happens inside code samples, native tooltips, or another
-  term's tip. Pass `tutorTermsInCode: true` to `create_code_tour_card` to opt code in.
+  term's tip. Matching is case-sensitive, so a tip written for `PATH` does not attach
+  itself to a filesystem `path`; set `caseInsensitive: true` on a term to match any
+  casing. Pass `tutorTermsInCode: true` to `create_code_tour_card` to opt code in.
+- Every card result carries `structuredContent.parts` as `{ current, total, hasMore }`,
+  so one completeness check works on every card type. While `hasMore` is true, content has
+  been withheld and the caller calls the same tool again with `part: current + 1`. Only
+  `create_markdown_card` and `create_code_tour_card` can split; every other card always
+  reports `{ current: 1, total: 1, hasMore: false }`. The rendered title keeps its
+  human-readable `(part 1 of 2)` suffix for the reader.
+- The split threshold is measured on **rendered** characters, not on the input a caller
+  writes. Escaping expands source unpredictably - `<`, `>`, `&`, and quotes each become
+  four to six characters - so a payload that looks well under the budget can cross it and
+  a larger-looking one may not. Read `parts.hasMore` rather than predicting from input
+  size. A markdown document with no H2 headings has no split boundary and always renders
+  as one part.
 - Right-click context actions are defined by the model per card; `{{selection}}` in an
   action prompt is replaced with the user's selected text.
 
@@ -313,16 +340,22 @@ everything to the console:
    `initialized` was announced, whether a card painted, the rendered card HTML, and the
    last 50 protocol messages. Paste its output when reporting a rendering issue.
 
-## GitHub Copilot canvas extension
+## Supplemental ports
 
-The [extension/](extension/README.md) folder contains a supplemental port of the card
-tools as a GitHub Copilot canvas extension named `chat-cards`. The agent drives the same
-card kinds (tabs, tables, charts, forms, show/hide, sequential lists, markdown documents,
-video) through canvas actions, and form submissions come back to the conversation as
-prompts. The port is self-contained - it does not import from `src/` or `dist/`, and the
-MCP server is unaffected by it. See [extension/README.md](extension/README.md) for the
-action list, the differences from the MCP tools, and how the folder maps onto the
-awesome-copilot contribution layout.
+The [extension/](extension/) folder contains supplemental ports of the card tools for
+other hosts. Both are self-contained - they do not import from `src/` or `dist/`, and
+the MCP server is unaffected by them.
+
+- [extension/github/](extension/github/README.md) - a GitHub Copilot canvas extension
+  named `chat-cards`. The agent drives the same card kinds (tabs, tables, charts, forms,
+  show/hide, sequential lists, markdown documents, video) through canvas actions, and
+  form submissions come back to the conversation as prompts. Its README covers the
+  action list, the differences from the MCP tools, and how the folder maps onto the
+  awesome-copilot contribution layout.
+- [extension/claude/](extension/claude/README.md) - a Claude artifact template: one
+  self-contained HTML page whose card spec block Claude fills and publishes as an
+  artifact. Forms and right-click actions produce prompts the user copies back into
+  the conversation.
 
 ## Development
 

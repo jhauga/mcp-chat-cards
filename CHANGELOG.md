@@ -7,6 +7,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3-alpha] - 2026-08-18
+
+Follow-up to a third live review pass, which exercised every card tool against a running
+instance and found six defects in what the tools actually returned.
+
+### Fixed
+
+- Text fields are escaped exactly once and never decoded first. The escaper used to skip
+  the `&` of a well-formed character reference, so a caller who passed `&amp;` to document
+  HTML got a card displaying `&` instead - and the same string rendered differently
+  depending on which field it landed in: markdown fenced blocks and inline code preserved
+  it, while markdown table cells, table card headers and rows, and tab card `text` and
+  `code` fields silently decoded a level. Every non-`html` field is now literal text, so
+  `&amp;` displays as `&amp;` everywhere. Raw `&`, `<`, `>`, `"`, `'`, and backslashes are
+  unaffected.
+- Multi-part results say so in a field a program can read. An oversized code tour or
+  document announced the split only as `(part 1 of 2)` appended to the rendered title, so
+  a consumer that did not string-scrape the HTML could not tell it was holding a partial
+  payload and silently lost files. Card results now carry
+  `structuredContent.parts { current, total, hasMore }`; the title suffix stays for
+  humans, and both tool descriptions document the field.
+- `create_video_card` rejects streaming platform page URLs (YouTube, Vimeo, Dailymotion,
+  Twitch, TikTok, and similar, including subdomains) instead of emitting a `<video>`
+  element that can never play. The error names the constraint and points at
+  `create_animation_card`, as the tool description already advised. A direct URL whose
+  path carries no recognized video extension is accepted but warned about in the summary.
+- `create_markdown_card` no longer passes raw HTML through live. A `<div>` written in
+  prose used to survive as an element and terminate its enclosing `<p>`, pushing the
+  trailing prose outside the paragraph, while the same string was escaped by every other
+  card. Markdown is now under one stated policy: raw HTML renders as literal text, the
+  same as every other non-`html` field. Fields explicitly named `html` (tab and reveal
+  sections) still accept sanitized markup.
+- `tutorTerms` matching is case-sensitive. A tip written for `PATH` attached itself to the
+  first lowercase `path` in the card - an unrelated and actively misleading gloss - and
+  left the real reference unmarked. Terms now match case exactly; set
+  `caseInsensitive: true` on a term to opt back into any-case matching. Word boundaries
+  and the existing exclusions (code samples, tooltips, other terms' tips) are unchanged.
+- `create_reveal_card` sections take `code` and `language`, mirroring the tab card, so
+  indented source keeps its monospace, its leading whitespace, and its copy button instead
+  of being flattened into a `<p>` with `<br>` breaks. A ``` fenced block inside a section's
+  `text` is promoted to a code block for the same reason.
+
+- Escaped block-level HTML in a markdown card is wrapped in the paragraph markup the
+  markdown structure implies. Escaping made the content inert, but it was emitted as a
+  bare text node between two `<p>` siblings, so it inherited no margin or line-height and
+  collided visually with the paragraphs around it. HTML comments are now dropped rather
+  than escaped, so a `<!-- markdownlint-disable -->` directive no longer turns into
+  visible prose.
+
+### Changed
+
+- `structuredContent.parts` is emitted on **every** card result, not only the two tools
+  that can split. Cards that cannot split report `{current: 1, total: 1, hasMore: false}`,
+  so a generic completeness check (`if (result.parts.hasMore)`) works on every card type
+  instead of throwing `undefined` on the ones that happen never to split - which is the
+  same class of silent-partial-content bug the field was added to prevent.
+- The canvas extension's card core (`extension/github/cards-core.mjs`) takes the same
+  escaping and tutor-term changes, so a string renders identically on both surfaces.
+
+### Added
+
+- A test asserting every served tool schema is valid under JSON Schema 2020-12 - declaring
+  either nothing (MCP's default dialect) or 2020-12 explicitly - so one tool regressing to
+  another dialect cannot silently break every card call on a strict host again.
+- Split fixtures (`test/fixtures/split-payloads.ts`) sized by measured RENDERED cost rather
+  than raw input length, so the `parts.hasMore === true` branch is exercised
+  deterministically. The budget is measured after escaping, which expands content
+  unpredictably, so hand-built payloads split or do not split more or less by chance. A
+  companion test asserts the fixtures still straddle the budget, so a change to the budget
+  or the cost function fails loudly instead of leaving the split assertions passing
+  vacuously.
+- Regression cover for the behaviour verified in review: entity preservation across all six
+  text fields, tutor terms with the adversarial early-lowercase / late-uppercase ordering,
+  both directions of video source validation (including direct URLs a denylist must not
+  sweep up), both reveal-card code paths, the tab `html` sanitizer keeping `<b>` and `<i>`
+  while stripping scripts and `onerror`, and `{{token}}` surviving unsubstituted outside a
+  form's `promptTemplate`, nesting included.
+
 ## [0.1.2-alpha] - 2026-08-14
 
 Follow-up to a second live review pass (reviewed via Claude Desktop), which confirmed the

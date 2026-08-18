@@ -6,6 +6,14 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createServer } from "../src/server.js";
+import {
+  ITEM_TARGET_COST,
+  splittingMarkdown,
+  splittingTourFiles,
+  SPLIT_MARKDOWN_HEADINGS,
+} from "./fixtures/split-payloads.js";
+import { DEFAULT_CARD_BUDGET } from "../src/util/budget.js";
+import { planTourParts, renderedTabCost } from "../src/cards/code-tour.js";
 
 interface ContentBlock {
   type: string;
@@ -27,6 +35,11 @@ async function readCardHtml(result: { content: unknown }): Promise<string> {
 
 interface CardStructuredContent {
   card: { articleHtml: string; config: { id: string; kind: string } };
+  parts?: { current: number; total: number; hasMore: boolean };
+}
+
+function cardOf(result: { structuredContent?: unknown }): CardStructuredContent {
+  return result.structuredContent as CardStructuredContent;
 }
 
 let client: Client;
@@ -82,6 +95,35 @@ describe("tool schema dialect interoperability", () => {
     // The card tools' output schemas - the part strict hosts validate - are
     // still being served at all.
     expect(tools.filter((tool) => tool.outputSchema).length).toBeGreaterThan(0);
+  });
+
+  // The guard the six-defect pass asked for: one tool regressing to another
+  // dialect breaks every card call on a strict host, and the failure surfaces
+  // client-side before dispatch, so no server-side test would ever see it.
+  // MCP's default dialect is 2020-12, so a schema that declares nothing is
+  // validated as 2020-12; declaring it explicitly is equally fine. Anything
+  // else - draft-07 above all - is the regression.
+  it("serves every tool schema under the 2020-12 dialect", async () => {
+    const { tools } = await client.listTools();
+    expect(tools.length).toBeGreaterThan(0);
+    const dialectOf = (schema: unknown): unknown =>
+      (schema as Record<string, unknown> | undefined)?.["$schema"];
+    for (const tool of tools) {
+      for (const schema of [tool.inputSchema, tool.outputSchema]) {
+        if (!schema) continue;
+        const dialect = dialectOf(schema);
+        expect(
+          dialect === undefined || dialect === "https://json-schema.org/draft/2020-12/schema",
+          `${tool.name} declares dialect ${String(dialect)}`,
+        ).toBe(true);
+      }
+    }
+    // Every card tool carries an outputSchema, which is the part a strict
+    // host validates; if these stopped being served the guard would pass
+    // vacuously.
+    const cardTools = tools.filter((tool) => tool.name.startsWith("create_"));
+    expect(cardTools.length).toBeGreaterThan(0);
+    expect(cardTools.every((tool) => tool.outputSchema)).toBe(true);
   });
 
   // Canary pinning the SDK behavior the shim compensates for: a bare
@@ -291,7 +333,7 @@ describe("result size", () => {
 });
 
 describe("text handling through the tool layer", () => {
-  it("does not double-escape a pre-escaped title", async () => {
+  it("escapes a pre-escaped title exactly once, so the entity shows literally", async () => {
     const result = await client.callTool({
       name: "create_reveal_card",
       arguments: {
@@ -300,8 +342,9 @@ describe("text handling through the tool layer", () => {
       },
     });
     const structured = result.structuredContent as CardStructuredContent;
-    expect(structured.card.articleHtml).toContain("<h1>Predict, Spot &amp; Fix</h1>");
-    expect(structured.card.articleHtml).not.toContain("&amp;amp;");
+    // The caller asked for the text "Predict, Spot &amp; Fix" to be READ, so
+    // that is what the card displays.
+    expect(structured.card.articleHtml).toContain("<h1>Predict, Spot &amp;amp; Fix</h1>");
   });
 
   it("escapes a plain ampersand in the same field", async () => {
@@ -345,6 +388,338 @@ describe("text handling through the tool layer", () => {
     for (const [, text] of chartHtml.matchAll(/<title>([\s\S]*?)<\/title>/g)) {
       expect(text).not.toContain("<span");
     }
+  });
+});
+
+describe("pre-escaped input renders literally in every text field", () => {
+  // Input fields take PLAIN text. A caller documenting HTML or templating
+  // passes "&amp;" so the reader sees "&amp;", which means the emitted markup
+  // must carry "&amp;amp;". The same string used to render four different
+  // ways depending on which field it landed in.
+  const LITERAL = "&amp;";
+  const ESCAPED_ONCE = "&amp;amp;";
+
+  it("keeps it literal in table card headers and rows", async () => {
+    const result = await client.callTool({
+      name: "create_table_card",
+      arguments: {
+        title: "Escaping",
+        headers: ["Pre-escaped &amp;"],
+        rows: [["&amp;"], ["&lt;div&gt;"], ["&quot;"]],
+      },
+    });
+    const html = cardOf(result).card.articleHtml;
+    expect(html).toContain("<th scope=\"col\">Pre-escaped &amp;amp;</th>");
+    expect(html).toContain("<td>&amp;amp;</td>");
+    expect(html).toContain("<td>&amp;lt;div&amp;gt;</td>");
+    expect(html).toContain("<td>&amp;quot;</td>");
+  });
+
+  it("keeps it literal in tab card text and code fields", async () => {
+    const result = await client.callTool({
+      name: "create_tab_card",
+      arguments: {
+        title: "Escaping",
+        tabs: [
+          { label: "Prose", text: LITERAL },
+          { label: "Source", code: LITERAL, language: "html" },
+        ],
+      },
+    });
+    const html = cardOf(result).card.articleHtml;
+    expect(html).toContain(`<p>${ESCAPED_ONCE}</p>`);
+    expect(html).toContain(`<code class="language-html">${ESCAPED_ONCE}</code>`);
+  });
+
+  it("keeps it literal in markdown table cells without regressing code", async () => {
+    const result = await client.callTool({
+      name: "create_markdown_card",
+      arguments: {
+        title: "Escaping",
+        markdown:
+          "| Head &amp; |\n| --- |\n| &amp; |\n\nInline `&amp;` span.\n\n```\nfenced &amp; code\n```\n",
+      },
+    });
+    const html = cardOf(result).card.articleHtml;
+    expect(html).toContain("<th>Head &amp;amp;</th>");
+    expect(html).toContain("<td>&amp;amp;</td>");
+    // Code spans and fences were already correct; they must stay correct.
+    expect(html).toContain("<code>&amp;amp;</code>");
+    expect(html).toContain("fenced &amp;amp; code");
+  });
+
+  it("still escapes raw markup characters exactly once", async () => {
+    const result = await client.callTool({
+      name: "create_table_card",
+      arguments: { title: "Raw", headers: ["A & B"], rows: [["<script>x</script>"]] },
+    });
+    const html = cardOf(result).card.articleHtml;
+    expect(html).toContain("A &amp; B");
+    expect(html).toContain("&lt;script&gt;x&lt;/script&gt;");
+    expect(html).not.toContain("<script>");
+  });
+});
+
+describe("multi-part results carry a machine-readable split signal", () => {
+  // "(part 1 of 2)" in the rendered title is for humans. A consumer that does
+  // not scrape the title had no way to know content was withheld, and silently
+  // lost it. The fixtures below are sized by MEASURED rendered cost, not by
+  // raw input length, so the hasMore:true branch is exercised deterministically
+  // instead of depending on how heavily a hand-written payload happens to
+  // escape - which is why that branch went unobserved in live testing.
+
+  it("builds fixtures that provably straddle the budget", () => {
+    // Guards the guard: if the budget or the cost function moves, this fails
+    // loudly rather than letting the split assertions below pass vacuously on
+    // a payload that no longer splits.
+    const files = splittingTourFiles();
+    const costs = files.map((file) => renderedTabCost(file));
+    for (const cost of costs) {
+      expect(cost).toBeGreaterThanOrEqual(ITEM_TARGET_COST);
+      expect(cost).toBeLessThan(DEFAULT_CARD_BUDGET);
+    }
+    const total = costs.reduce((sum, cost) => sum + cost, 0);
+    expect(total).toBeGreaterThan(DEFAULT_CARD_BUDGET);
+    expect(total).toBeLessThanOrEqual(DEFAULT_CARD_BUDGET * 2);
+    expect(planTourParts(files)).toHaveLength(2);
+  });
+
+  it("reports hasMore true on part 1 of a split code tour and delivers the rest on part 2", async () => {
+    const files = splittingTourFiles();
+    const first = await client.callTool({
+      name: "create_code_tour_card",
+      arguments: { title: "Rust tour", files },
+    });
+    expect(first.isError).toBeUndefined();
+    expect(cardOf(first).parts).toEqual({ current: 1, total: 2, hasMore: true });
+    // The human-facing suffix stays alongside the machine-readable field.
+    expect(cardOf(first).card.articleHtml).toContain("part 1 of 2");
+
+    const second = await client.callTool({
+      name: "create_code_tour_card",
+      arguments: { title: "Rust tour", files, part: 2 },
+    });
+    expect(second.isError).toBeUndefined();
+    expect(cardOf(second).parts).toEqual({ current: 2, total: 2, hasMore: false });
+
+    // Every file appears in exactly one part: nothing withheld, nothing
+    // duplicated. This is the loss the field exists to make detectable.
+    const tabsOf = (result: { structuredContent?: unknown }): string[] =>
+      files
+        .map((file) => file.path)
+        .filter((path) => cardOf(result).card.articleHtml.includes(path));
+    const inFirst = tabsOf(first);
+    const inSecond = tabsOf(second);
+    expect(inFirst.length).toBeGreaterThan(0);
+    expect(inSecond.length).toBeGreaterThan(0);
+    expect(inFirst.filter((path) => inSecond.includes(path))).toEqual([]);
+    expect([...inFirst, ...inSecond].sort()).toEqual(files.map((file) => file.path).sort());
+  });
+
+  it("reports hasMore true on part 1 of a split markdown document", async () => {
+    const markdown = splittingMarkdown();
+    const first = await client.callTool({
+      name: "create_markdown_card",
+      arguments: { markdown },
+    });
+    expect(first.isError).toBeUndefined();
+    expect(cardOf(first).parts).toEqual({ current: 1, total: 2, hasMore: true });
+
+    const second = await client.callTool({
+      name: "create_markdown_card",
+      arguments: { markdown, part: 2 },
+    });
+    expect(cardOf(second).parts).toEqual({ current: 2, total: 2, hasMore: false });
+
+    const headingsIn = (result: { structuredContent?: unknown }): string[] =>
+      SPLIT_MARKDOWN_HEADINGS.filter((heading) =>
+        cardOf(result).card.articleHtml.includes(`<summary>${heading}</summary>`),
+      );
+    expect([...headingsIn(first), ...headingsIn(second)]).toEqual(SPLIT_MARKDOWN_HEADINGS);
+  });
+
+  it("reports hasMore false for a payload under the budget", async () => {
+    const small = Array.from({ length: 6 }, (_, i) => ({
+      path: `src/small${i}.rs`,
+      content: `// small ${i}\n${"fn f() {}\n".repeat(20)}`,
+    }));
+    const tour = await client.callTool({
+      name: "create_code_tour_card",
+      arguments: { title: "Small tour", files: small },
+    });
+    expect(cardOf(tour).parts).toEqual({ current: 1, total: 1, hasMore: false });
+    expect(cardOf(tour).card.articleHtml).not.toContain("part 1 of");
+
+    const doc = await client.callTool({
+      name: "create_markdown_card",
+      arguments: { markdown: "# Small\n\n## Only\n\nBrief." },
+    });
+    expect(cardOf(doc).parts).toEqual({ current: 1, total: 1, hasMore: false });
+  });
+
+  // Resolution (b) of the API-shape question: a generic completeness check
+  // must not throw on the card types that never split.
+  it("emits parts on every card type, not only the split-capable ones", async () => {
+    const calls: { name: string; arguments: Record<string, unknown> }[] = [
+      { name: "create_tab_card", arguments: { title: "T", tabs: [{ label: "A", text: "a" }] } },
+      { name: "create_table_card", arguments: { title: "T", headers: ["A"], rows: [["1"]] } },
+      {
+        name: "create_form_card",
+        arguments: { title: "T", fields: [{ name: "a", label: "A" }] },
+      },
+      {
+        name: "create_chart_card",
+        arguments: {
+          title: "T",
+          type: "bar",
+          labels: ["a"],
+          series: [{ name: "s", values: [1] }],
+        },
+      },
+      {
+        name: "create_video_card",
+        arguments: { title: "T", src: "https://example.com/clip.mp4" },
+      },
+      {
+        name: "create_animation_card",
+        arguments: { title: "T", scenes: [{ heading: "One", text: "x" }] },
+      },
+      {
+        name: "create_reveal_card",
+        arguments: { title: "T", sections: [{ heading: "H", text: "t" }] },
+      },
+      { name: "create_list_card", arguments: { title: "T", items: [{ text: "one" }] } },
+      { name: "create_markdown_card", arguments: { markdown: "# T\n\nBody." } },
+      {
+        name: "create_code_tour_card",
+        arguments: { title: "T", files: [{ path: "a.rs", content: "fn main() {}" }] },
+      },
+    ];
+    for (const call of calls) {
+      const result = await client.callTool(call);
+      expect(result.isError, `${call.name} failed`).toBeUndefined();
+      // The check a consumer actually writes, on every card type.
+      expect(cardOf(result).parts, call.name).toEqual({
+        current: 1,
+        total: 1,
+        hasMore: false,
+      });
+      expect(cardOf(result).parts?.hasMore, call.name).toBe(false);
+    }
+  });
+});
+
+describe("create_video_card source validation", () => {
+  it("rejects a streaming platform page and names the alternative", async () => {
+    const result = await client.callTool({
+      name: "create_video_card",
+      arguments: { title: "Clip", src: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as ContentBlock[])[0].text ?? "";
+    expect(text).toContain("youtube.com");
+    expect(text).toContain("create_animation_card");
+    expect(result.structuredContent).toBeUndefined();
+  });
+
+  it("still accepts a direct video file and infers its type", async () => {
+    const result = await client.callTool({
+      name: "create_video_card",
+      arguments: { title: "Clip", src: "https://example.com/clip.mp4", autoplay: true },
+    });
+    expect(result.isError).toBeUndefined();
+    const html = cardOf(result).card.articleHtml;
+    expect(html).toContain("<video class=\"mcc-video-player\" controls playsinline preload=\"metadata\"");
+    expect(html).toContain('type="video/mp4"');
+    expect(html).toContain(" muted");
+    expect(html).toContain(" autoplay");
+    // The fallback link is part of the working card, not collateral of the
+    // rejection path.
+    expect(html).toContain("Open the clip directly");
+    expect(html).toContain('href="https://example.com/clip.mp4"');
+  });
+
+  // The denylist must stay discriminating. Rejecting a valid direct URL would
+  // be a worse defect than the dead player it was added to prevent.
+  it("accepts direct sources the denylist must not sweep up", async () => {
+    for (const src of [
+      "https://example.com/clip.webm",
+      "https://cdn.example.com/videos/youtube-review.mp4",
+      "https://notyoutube.com/clip.mp4",
+      "https://vimeo-mirror.example.com/clip.mp4",
+      "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28y",
+    ]) {
+      const result = await client.callTool({
+        name: "create_video_card",
+        arguments: { title: "Clip", src },
+      });
+      expect(result.isError, src).toBeUndefined();
+      expect(cardOf(result).card.articleHtml, src).toContain("mcc-video-player");
+    }
+  });
+});
+
+describe("create_reveal_card code sections", () => {
+  it("renders a code field as a copyable block, not a paragraph", async () => {
+    const result = await client.callTool({
+      name: "create_reveal_card",
+      arguments: {
+        title: "Add a flag",
+        sections: [
+          {
+            heading: "Quiet mode",
+            text: "Add a bool field:",
+            code: "#[arg(long)]\n    quiet: bool,",
+            language: "rust",
+          },
+        ],
+      },
+    });
+    const html = cardOf(result).card.articleHtml;
+    expect(html).toContain("mcc-copy-code");
+    expect(html).toContain('<code class="language-rust">');
+    expect(html).toContain("#[arg(long)]\n    quiet: bool,");
+    expect(html).not.toContain("quiet: bool,<br>");
+  });
+});
+
+describe("template tokens outside a promptTemplate", () => {
+  // {{name}} is substituted by the card runtime only inside a form's
+  // promptTemplate and a context action's prompt. Anywhere else it is ordinary
+  // text and must survive verbatim, nesting included.
+  const TOKENS = "{{topic}} and {{ nested {{x}} }}";
+
+  it("survives unsubstituted in titles, cells, and prose", async () => {
+    const table = await client.callTool({
+      name: "create_table_card",
+      arguments: { title: TOKENS, headers: [TOKENS], rows: [[TOKENS]] },
+    });
+    const tableHtml = cardOf(table).card.articleHtml;
+    expect(tableHtml).toContain(`<h1>${TOKENS}</h1>`);
+    expect(tableHtml).toContain(`<th scope="col">${TOKENS}</th>`);
+    expect(tableHtml).toContain(`<td>${TOKENS}</td>`);
+
+    const reveal = await client.callTool({
+      name: "create_reveal_card",
+      arguments: { title: "T", sections: [{ heading: TOKENS, text: TOKENS }] },
+    });
+    const revealHtml = cardOf(reveal).card.articleHtml;
+    expect(revealHtml).toContain(`<summary>${TOKENS}</summary>`);
+    expect(revealHtml).toContain(`<p>${TOKENS}</p>`);
+  });
+
+  it("is carried into a form's promptTemplate for the runtime to substitute", async () => {
+    const result = await client.callTool({
+      name: "create_form_card",
+      arguments: {
+        title: "Ask",
+        promptTemplate: "Teach {{topic}} simply.",
+        fields: [{ name: "topic", label: "Topic" }],
+      },
+    });
+    expect(cardOf(result).card.articleHtml).toContain(
+      'data-prompt-template="Teach {{topic}} simply."',
+    );
   });
 });
 

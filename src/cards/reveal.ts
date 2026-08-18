@@ -1,10 +1,21 @@
-import { escapeHtml, sanitizeHtml, textToParagraphs, type TutorTerm } from "../util/html.js";
+import {
+  escapeHtml,
+  renderCodeBlock,
+  sanitizeHtml,
+  textToBlocks,
+  type TutorTerm,
+} from "../util/html.js";
 import { renderCardDocument, type ContextAction, type RenderedCard } from "./shell.js";
 
 export interface RevealSection {
   heading: string;
   html?: string;
   text?: string;
+  // Code sample shown in a monospace block with a copy button, exactly as the
+  // tab card renders its own code field. Indented source pasted into text
+  // would otherwise lose its leading whitespace and its copy button.
+  code?: string;
+  language?: string;
   open?: boolean;
 }
 
@@ -16,14 +27,23 @@ export interface RevealCardOptions {
   contextActions?: ContextAction[];
 }
 
+// A section may carry prose, a code sample, or both, in that reading order.
+// html is the explicitly-HTML field and replaces the pair when given.
+function sectionContent(section: RevealSection): string {
+  if (section.html) return sanitizeHtml(section.html);
+  const parts: string[] = [];
+  if (section.text) parts.push(textToBlocks(section.text));
+  if (section.code !== undefined) parts.push(renderCodeBlock(section.code, section.language));
+  return parts.join("\n");
+}
+
 export function buildRevealCard(options: RevealCardOptions): RenderedCard {
   const sections = options.sections
     .map((section) => {
-      const content = section.html ? sanitizeHtml(section.html) : textToParagraphs(section.text ?? "");
       const open = section.open ? " open" : "";
       return `<div class="mcc-block"><details class="mcc-reveal"${open}>
 <summary>${escapeHtml(section.heading)}</summary>
-<div class="mcc-reveal-body">${content}</div>
+<div class="mcc-reveal-body">${sectionContent(section)}</div>
 </details></div>`;
     })
     .join("\n");

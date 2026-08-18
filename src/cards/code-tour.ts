@@ -7,6 +7,7 @@ import { escapeHtml, textToParagraphs, type TutorTerm } from "../util/html.js";
 import { hoistProjectAnchors, languageForFile } from "../util/files.js";
 import {
   assertValidPart,
+  cardParts,
   cardSizeBudget,
   continuationNote,
   packByBudget,
@@ -128,6 +129,7 @@ export function buildCodeTourCard(options: CodeTourCardOptions): RenderedCard {
   });
   return {
     ...card,
+    parts: cardParts(info),
     summary:
       `Created code tour card "${partTitle(options.title, info)}" with file tab(s): ` +
       partFiles.map((file) => file.path).join(", ") +

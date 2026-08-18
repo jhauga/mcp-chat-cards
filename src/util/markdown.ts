@@ -3,9 +3,63 @@
 // result matches the card system - tables become card tables, fenced code
 // gets copy buttons, and the document is broken into H2 sections that can
 // fold into show/hide reveals and be packed into multi-part cards.
-import { marked } from "marked";
+import { Marked, type RendererObject } from "marked";
 import { parse, HTMLElement } from "node-html-parser";
-import { escapeHtml, sanitizeHtml } from "./html.js";
+import { escapeHtml, sanitizeHtml, textToParagraphs } from "./html.js";
+
+// marked's default text renderer leaves a well-formed character reference
+// alone, so an author who writes "&amp;amp;" to document escaping gets a bare
+// "&" back, and the same string renders differently in a markdown card than in
+// a table or tab card. Raw HTML is passed through live by default too, which
+// makes a <div> in prose terminate the enclosing paragraph and puts markdown
+// under a looser policy than every other card. Both fields are plain text
+// here: escaped exactly once, never decoded, never executed. Fenced blocks and
+// inline code already escape fully, so they are left to marked.
+// A comment carries no reader-facing content, and markdown authors use it for
+// tooling directives ("<!-- markdownlint-disable -->"). Escaping one would
+// turn an invisible directive into visible prose, so comments are dropped.
+const HTML_COMMENT = /<!--[\s\S]*?-->/g;
+
+const LITERAL_TEXT_RENDERER: RendererObject = {
+  // Block-level HTML and inline tags both land here, and they need different
+  // treatment. An inline tag sits inside a paragraph already, so escaping it
+  // in place is enough. A block one is a sibling of the paragraphs around it:
+  // emitted as a bare text node it inherits no margin or line-height and
+  // collides with its neighbours, so it is wrapped in the paragraph markup the
+  // markdown structure implies.
+  html(token) {
+    const text = token.text.replace(HTML_COMMENT, "");
+    if (!token.block) return escapeHtml(text);
+    return textToParagraphs(text);
+  },
+  text(token) {
+    if ("tokens" in token && token.tokens && token.tokens.length > 0) {
+      return this.parser.parseInline(token.tokens);
+    }
+    // An extension that emits ready-made markup marks it escaped.
+    if ("escaped" in token && token.escaped) return token.text;
+    return escapeHtml(token.text);
+  },
+  // Link titles and image alt text are caller text too - the alt is what a
+  // reader sees when the image does not load - so they follow the same rule
+  // as the prose around them. URLs are left to sanitizeHtml, which drops an
+  // unsafe scheme from any url-bearing attribute a moment later.
+  link({ href, title, tokens }) {
+    const label = this.parser.parseInline(tokens);
+    const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<a href="${escapeHtml(href)}"${titleAttr}>${label}</a>`;
+  },
+  image({ href, title, text }) {
+    const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}"${titleAttr}>`;
+  },
+};
+
+// A private instance, so the renderer policy cannot leak into any other use
+// of marked in the process.
+const cardMarkdown = new Marked({ gfm: true, async: false }).use({
+  renderer: LITERAL_TEXT_RENDERER,
+});
 
 export interface MarkdownSection {
   // null for content before the first H2 (the intro).
@@ -40,7 +94,10 @@ function restyleCodeBlocks(root: HTMLElement): void {
 
 // Parse markdown into card-styled HTML sections split on H2 headings.
 export function parseMarkdownDocument(markdown: string): MarkdownDocument {
-  const rawHtml = marked.parse(markdown, { async: false, gfm: true }) as string;
+  const rawHtml = cardMarkdown.parse(markdown, { async: false }) as string;
+  // Raw HTML is already inert by the time it gets here; sanitizing anyway
+  // keeps the markdown card under the same policy as the explicitly-HTML
+  // fields if the renderer above ever gains a pass-through case.
   const root = parse(sanitizeHtml(rawHtml), { comment: false });
 
   let title: string | undefined;
