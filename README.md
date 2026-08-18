@@ -313,6 +313,17 @@ everything to the console:
    `initialized` was announced, whether a card painted, the rendered card HTML, and the
    last 50 protocol messages. Paste its output when reporting a rendering issue.
 
+## GitHub Copilot canvas extension
+
+The [extension/](extension/README.md) folder contains a supplemental port of the card
+tools as a GitHub Copilot canvas extension named `chat-cards`. The agent drives the same
+card kinds (tabs, tables, charts, forms, show/hide, sequential lists, markdown documents,
+video) through canvas actions, and form submissions come back to the conversation as
+prompts. The port is self-contained - it does not import from `src/` or `dist/`, and the
+MCP server is unaffected by it. See [extension/README.md](extension/README.md) for the
+action list, the differences from the MCP tools, and how the folder maps onto the
+awesome-copilot contribution layout.
+
 ## Development
 
 ```bash
