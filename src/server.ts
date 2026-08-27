@@ -4,6 +4,14 @@ import { z } from "zod";
 import { buildTabCard } from "./cards/tabs.js";
 import { buildTableCard } from "./cards/table.js";
 import { buildFormCard, type FieldSpec } from "./cards/form.js";
+import {
+  buildEfficientPromptCard,
+  buildPromptGistCard,
+  buildPromptRefineCard,
+  GIST_MAX_CHARS,
+  MAX_REFINE_ROUNDS,
+  type RefineQuestion,
+} from "./cards/prompt-forge.js";
 import { buildChartCard } from "./cards/chart.js";
 import { buildVideoCard } from "./cards/video.js";
 import { buildMotionCard, type MotionScene } from "./cards/motion.js";
@@ -28,7 +36,7 @@ import { withInteroperableToolSchemas } from "./util/schema-dialect.js";
 // Keep in step with package.json. This is the version the server announces
 // and the card template's __mccDebug() reports, so it is also how a live
 // review tells a current deployment from a stale one.
-export const SERVER_VERSION = "0.1.1-alpha";
+export const SERVER_VERSION = "0.2.0-alpha";
 
 const SERVER_INSTRUCTIONS = `mcp-chat-cards renders interactive HTML cards inside the chat.
 Use these tools whenever the conversation involves research, education, professional or
@@ -60,6 +68,15 @@ Paths resolve on the machine running THIS server, not in your own sandbox. If th
 you want lives only in your environment, pass its content inline (markdown/files) rather
 than a path; read_local_file and unpack_archive read the server's filesystem and are
 useful only for files that are already there.
+
+Efficient prompts: every card's right-click menu carries "Generate Efficient Verbose Prompt",
+which sends a message tagged [efficient-prompt]. That tag means the user wants help writing
+one prompt, not an answer to the topic yet. Run the flow with cards and almost no prose:
+create_prompt_gist_card to collect a ${GIST_MAX_CHARS}-character gist, then at most
+${MAX_REFINE_ROUNDS} create_prompt_refine_card rounds of multiple-choice questions when the gist leaves
+real gaps, then create_efficient_prompt_card with the finished prompt. Skip straight to the
+last step when the gist is already clear, keep chat replies to one line while the flow runs,
+and do not act on the generated prompt until the user sends it back as a message.
 
 Large content is split automatically into multi-part cards so results stay small enough
 for hosts to render (the ceiling is about 40,000 characters of serialized result). EVERY
@@ -422,6 +439,124 @@ export function createServer(): McpServer {
     },
   );
 
+  // Prompt forge. Three tools, one flow: collect a short gist, close the
+  // gaps with multiple-choice rounds, hand back a single lean prompt.
+  server.registerTool(
+    "create_prompt_gist_card",
+    {
+      title: "Start an efficient prompt",
+      _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
+      description:
+        "Open step 1 of the efficient-prompt flow: a card asking the user to describe, in no more " +
+        `than ${GIST_MAX_CHARS} characters, the gist of where they want to go. Call this when a message ` +
+        'is tagged [efficient-prompt], or when the user asks for help writing a prompt. Submitting ' +
+        "the card sends back the gist along with the rules for the rest of the flow, so answer with " +
+        "the card and wait rather than asking follow-up questions in chat.",
+      inputSchema: {
+        question: z
+          .string()
+          .optional()
+          .describe("Replaces the default gist question when you already know what they are circling"),
+        placeholder: z.string().optional().describe("Placeholder text inside the gist textarea"),
+        title: z.string().optional(),
+        subtitle: z.string().optional(),
+        contextActions: contextActionsSchema,
+      },
+    },
+    async (args) => {
+      try {
+        return cardResult(buildPromptGistCard(args));
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "create_prompt_refine_card",
+    {
+      title: "Refine an efficient prompt",
+      _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
+      description:
+        "Step 2 of the efficient-prompt flow: ask the fewest multiple-choice questions that close " +
+        "the gaps the gist left. Radios by default, checkboxes when several answers can be true at " +
+        `once; every question also gets a free-text "Other". At most ${MAX_REFINE_ROUNDS} refine rounds - pass the ` +
+        "round number so the card can say how many are left. Skip this step entirely when the gist " +
+        "is already clear enough to write the prompt.",
+      inputSchema: {
+        round: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_REFINE_ROUNDS)
+          .optional()
+          .describe(`Which refine round this is, 1 to ${MAX_REFINE_ROUNDS} (default 1)`),
+        questions: z
+          .array(
+            z.object({
+              name: z.string().min(1).describe("Short token name the answer is reported under"),
+              question: z.string().min(1).describe("The question, as plain text"),
+              options: z
+                .array(z.union([z.string(), z.object({ label: z.string(), value: z.string().optional() })]))
+                .min(1),
+              multiple: z
+                .boolean()
+                .optional()
+                .describe("Checkboxes instead of radios, for questions with several true answers"),
+              help: z.string().optional(),
+            }),
+          )
+          .min(1),
+        title: z.string().optional(),
+        subtitle: z.string().optional(),
+        contextActions: contextActionsSchema,
+      },
+    },
+    async (args) => {
+      try {
+        return cardResult(
+          buildPromptRefineCard({ ...args, questions: args.questions as RefineQuestion[] }),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "create_efficient_prompt_card",
+    {
+      title: "Deliver the efficient prompt",
+      _meta: CARD_UI_META,
+      outputSchema: CARD_OUTPUT_SCHEMA,
+      description:
+        "Step 3 of the efficient-prompt flow: hand back the finished prompt in an editable card " +
+        "with a character and token count, a copy button, and a send button gated behind a " +
+        "confirmation box. Write one prompt that is verbose only where verbosity buys a complete " +
+        "first-pass answer: no restated context, no filler, an explicit output shape. Do not act " +
+        "on the prompt here - wait for the user to send it back as a message.",
+      inputSchema: {
+        prompt: z.string().min(1).describe("The finished prompt, as plain text"),
+        notes: z
+          .string()
+          .optional()
+          .describe("One line on what the prompt assumes or leaves out, shown under it"),
+        title: z.string().optional(),
+        subtitle: z.string().optional(),
+        contextActions: contextActionsSchema,
+      },
+    },
+    async (args) => {
+      try {
+        return cardResult(buildEfficientPromptCard(args));
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
   server.registerTool(
     "create_chart_card",
     {
@@ -742,8 +877,13 @@ export function createServer(): McpServer {
       _meta: CARD_UI_META,
       outputSchema: CARD_OUTPUT_SCHEMA,
       description:
-        "Render a project's source as an interactive card with one tab per file (code with copy " +
-        "buttons). Explicit files keep the order they are given in, with README and manifests " +
+        "Render a project's source as an interactive card with one tab per file. Source files are " +
+        "syntax-highlighted for their detected language and line-numbered, with a Raw/Code toggle " +
+        "and a copy button, the way a repository browser shows a file; a language with no grammar " +
+        "renders as a plain code block. Markdown files (.md, .markdown, .mdx) render as a " +
+        "formatted page - headings, tables, links, copyable fenced code - with a Raw/Rendered " +
+        "toggle back to the source, so a README in a tour reads as documentation rather than as " +
+        "source. Explicit files keep the order they are given in, with README and manifests " +
         "hoisted to the front; archive files are ordered README, manifest, then src. Pass the " +
         "path of a zip archive generated " +
         "earlier in the conversation for a one-call plug-n-play tour, or pass files explicitly. " +

@@ -28,6 +28,9 @@ survives HTML parsing.
 | `list` | Nested sequential outline numbered 1., 1.1., 1.1.1. |
 | `document` | Markdown document as one card: H1 becomes the title, H2 sections fold into reveals |
 | `video` | HTML video player for a short clip (direct file URL, `data:video/*`, or `blob:`) |
+| `prompt-gist` | Step 1 of the efficient-prompt flow: a 350-character gist |
+| `prompt-refine` | Step 2: multiple-choice questions, each with a free-text "Other" (max 3 rounds) |
+| `prompt-final` | Step 3: the finished prompt, editable, with its character and token count |
 
 Option shapes match the create actions of the
 [canvas extension](../github/README.md) and the MCP tools. Example spec block:
@@ -60,11 +63,17 @@ card's HTML source, collapse, drag to reorder, tutor-term tooltips after a hover
 dwell, per-card right-click actions, and a light/dark theme toggle (a `data-theme`
 attribute stamped on the root element by a host is respected).
 
+The right-click menu also carries "Generate Efficient Verbose Prompt", on cards and on
+the empty deck alike. It builds a gist card on the page itself and starts the flow that
+turns a short gist into one token-efficient prompt.
+
 ## Differences from the canvas extension
 
 - **No live agent channel.** Submitting a form reveals the built prompt with a copy
   button, and right-click actions copy their prompt to the clipboard; the user pastes
-  it into the conversation as their next message.
+  it into the conversation as their next message. The `prompt-final` card drops its
+  send button and confirmation box for the same reason: on this page the clipboard is
+  the whole story, so promising a send would be a lie.
 - **The spec block is the deck.** Removing or reordering cards on the page changes
   only that open page; the deck itself changes by editing the spec block and
   publishing again. There are no `update_card`/`remove_card` style operations.

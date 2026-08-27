@@ -13,7 +13,8 @@ import {
   packByBudget,
   partTitle,
 } from "../util/budget.js";
-import { buildTabCard, type TabSpec } from "./tabs.js";
+import { canRenderCodeFileView } from "../util/file-view.js";
+import { buildTabCard, renderTabPanel, type TabSpec } from "./tabs.js";
 import type { ContextAction, RenderedCard } from "./shell.js";
 
 export interface TourFile {
@@ -39,8 +40,9 @@ export interface CodeTourCardOptions {
 const DEFAULT_MAX_TABS = 12;
 const TAB_OVERHEAD = 400;
 // A single file never fills a whole card by itself; beyond this the reader
-// should ask for the specific file. Measured after escaping, like the budget
-// itself, so a file dense in angle brackets and quotes cannot slip through.
+// should ask for the specific file. Measured after rendering, like the budget
+// itself, so neither a file dense in angle brackets nor a markdown file
+// carrying two views of itself can slip through.
 const TAB_CONTENT_CAP = 16_000;
 
 function tabLabel(filePath: string): string {
@@ -49,21 +51,62 @@ function tabLabel(filePath: string): string {
   return segments.length <= 2 ? normalized : segments.slice(-2).join("/");
 }
 
+// A markdown file is the one kind of source nobody wants to read as source by
+// default: a README in a tour is documentation, not code. These files render
+// as a page with a toggle back to the raw text; every other extension keeps
+// the plain code block.
+const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd", "mdx"]);
+
+export function isMarkdownFile(filePath: string): boolean {
+  const base = filePath.replace(/\\/g, "/").split("/").pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  if (dot < 0) return false;
+  return MARKDOWN_EXTENSIONS.has(base.slice(dot + 1).toLowerCase());
+}
+
+export function tabForFile(file: TourFile): TabSpec {
+  const label = tabLabel(file.path);
+  if (isMarkdownFile(file.path)) return { label, markdown: file.content };
+  return {
+    label,
+    code: file.content,
+    language: file.language ?? languageForFile(file.path),
+    fileView: true,
+  };
+}
+
 // What a file actually costs in the card, not what it costs on disk. Source
 // is HTML-escaped into the tab panel, and a single "<" becomes four
 // characters, so raw length under-counts markup-dense files badly enough to
 // push a "small" tour past the host's result ceiling.
+//
+// A markdown file cannot be measured that way at all: its panel carries the
+// rendered page AND the raw source, so its source length under-counts it by
+// more than half. Those are measured on the panel that will actually be
+// emitted, which is the only way the packer and the renderer cannot disagree.
+function panelContentCost(file: TourFile): number {
+  const tab = tabForFile(file);
+  // A plain code block costs its escaped source. A markdown panel carries a
+  // rendered page as well, and a highlighted panel carries a span per token
+  // and a line-number gutter, so both are measured on the markup that will
+  // actually be emitted.
+  if (isMarkdownFile(file.path) || (tab.fileView && canRenderCodeFileView(tab.language))) {
+    return renderTabPanel(tab).length;
+  }
+  return escapeHtml(file.content).length;
+}
+
 export function renderedTabCost(file: TourFile): number {
-  return escapeHtml(file.content).length + TAB_OVERHEAD;
+  return panelContentCost(file) + TAB_OVERHEAD;
 }
 
 function capContent(file: TourFile): TourFile {
-  if (escapeHtml(file.content).length <= TAB_CONTENT_CAP) return file;
-  // Escaping is not a fixed ratio, so converge on a raw length whose escaped
-  // form fits instead of assuming one.
+  if (panelContentCost(file) <= TAB_CONTENT_CAP) return file;
+  // Neither escaping nor markdown rendering is a fixed ratio, so converge on
+  // a raw length whose rendered form fits instead of assuming one.
   let keep = TAB_CONTENT_CAP;
-  for (let attempt = 0; attempt < 8; attempt++) {
-    if (escapeHtml(file.content.slice(0, keep)).length <= TAB_CONTENT_CAP) break;
+  for (let attempt = 0; attempt < 12 && keep > 200; attempt++) {
+    if (panelContentCost({ ...file, content: file.content.slice(0, keep) }) <= TAB_CONTENT_CAP) break;
     keep = Math.floor(keep * 0.75);
   }
   const omitted = file.content.length - keep;
@@ -106,11 +149,7 @@ export function buildCodeTourCard(options: CodeTourCardOptions): RenderedCard {
   const partFiles = parts[part - 1];
   const info = { part, totalParts };
 
-  const tabs: TabSpec[] = partFiles.map((file) => ({
-    label: tabLabel(file.path),
-    code: file.content,
-    language: file.language ?? languageForFile(file.path),
-  }));
+  const tabs: TabSpec[] = partFiles.map(tabForFile);
   if (options.intro && part === 1) {
     tabs.unshift({ label: "Start here", html: textToParagraphs(options.intro) });
   }

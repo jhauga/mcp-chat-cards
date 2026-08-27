@@ -64,6 +64,9 @@ describe("tool listing", () => {
         "create_form_card",
         "create_list_card",
         "create_markdown_card",
+        "create_efficient_prompt_card",
+        "create_prompt_gist_card",
+        "create_prompt_refine_card",
         "create_reveal_card",
         "create_tab_card",
         "create_table_card",
@@ -166,9 +169,12 @@ describe("MCP Apps integration", () => {
       "create_animation_card",
       "create_chart_card",
       "create_code_tour_card",
+      "create_efficient_prompt_card",
       "create_form_card",
       "create_list_card",
       "create_markdown_card",
+      "create_prompt_gist_card",
+      "create_prompt_refine_card",
       "create_reveal_card",
       "create_tab_card",
       "create_table_card",
@@ -238,6 +244,48 @@ describe("create_animation_card", () => {
     expect(structured.card.config.kind).toBe("motion");
     expect(structured.card.articleHtml).toContain("mcc-motion");
     expect(structured.card.articleHtml).toContain("data-mcc-zoom=");
+  });
+});
+
+describe("efficient-prompt tools", () => {
+  it("renders each step of the flow through the tool schemas", async () => {
+    const gist = await client.callTool({ name: "create_prompt_gist_card", arguments: {} });
+    expect(gist.isError).toBeFalsy();
+    expect((gist.structuredContent as CardStructuredContent).card.config.kind).toBe("prompt-gist");
+
+    const refine = await client.callTool({
+      name: "create_prompt_refine_card",
+      arguments: {
+        round: 2,
+        questions: [
+          { name: "output", question: "What should come back?", options: ["Table", "Prose"], multiple: true },
+        ],
+      },
+    });
+    expect(refine.isError).toBeFalsy();
+    const refineCard = (refine.structuredContent as CardStructuredContent).card;
+    expect(refineCard.config.kind).toBe("prompt-refine");
+    expect(refineCard.articleHtml).toContain('type="checkbox"');
+
+    const final = await client.callTool({
+      name: "create_efficient_prompt_card",
+      arguments: { prompt: "List the three slowest test files and why." },
+    });
+    expect(final.isError).toBeFalsy();
+    const finalCard = (final.structuredContent as CardStructuredContent).card;
+    expect(finalCard.config.kind).toBe("prompt-final");
+    expect(finalCard.articleHtml).toContain("mcc-confirm");
+  });
+
+  it("rejects a fourth refine round at the schema", async () => {
+    const result = await client.callTool({
+      name: "create_prompt_refine_card",
+      arguments: {
+        round: 4,
+        questions: [{ name: "scope", question: "How wide?", options: ["Narrow", "Wide"] }],
+      },
+    });
+    expect(result.isError).toBe(true);
   });
 });
 

@@ -24,7 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { joinSession, createCanvas } from "@github/copilot-sdk/extension";
-import { buildCard, CARD_BUILDERS } from "./cards-core.mjs";
+import { buildCard, CARD_BUILDERS, GIST_MAX_CHARS, MAX_REFINE_ROUNDS } from "./cards-core.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CANVAS_PAGE = readFileSync(path.join(__dirname, "assets", "canvas.html"), "utf8");
@@ -388,9 +388,9 @@ function cardListing(instance) {
 
 // Create a card of the given kind, append it to the deck (trimming the
 // oldest cards past the limit), and notify the canvas.
-function createCardAction(ctx, kind) {
+function createCardAction(ctx, kind, input = ctx.input ?? {}) {
   const instance = getInstance(ctx.instanceId, ctx.sessionId);
-  const card = buildCard(kind, ctx.input ?? {});
+  const card = buildCard(kind, input);
   instance.cards.push(card);
   let note = "";
   while (instance.cards.length > MAX_CARDS) {
@@ -414,6 +414,30 @@ function createCardAction(ctx, kind) {
 
 function actionError(error) {
   return { error: error instanceof Error ? error.message : String(error) };
+}
+
+// ---------------------------------------------------------------------------
+// Prompt forge round counter
+// ---------------------------------------------------------------------------
+// The refine cards say how many rounds are left, but an agent that loses that
+// thread would keep asking questions instead of writing the prompt. The count
+// is tracked per canvas so the cap is enforced here rather than trusted.
+// It lives in memory only: a flow interrupted by a restart is over anyway.
+const forgeRounds = new Map();
+
+function startForge(instanceId) {
+  forgeRounds.set(instanceId, 0);
+}
+
+// Returns the round to render, or null when the cap has already been used up.
+// The round number the agent supplies is not consulted: what the card says is
+// what this canvas has actually shown, so a miscount cannot buy a fourth round.
+function nextForgeRound(instanceId) {
+  const used = forgeRounds.get(instanceId) ?? 0;
+  if (used >= MAX_REFINE_ROUNDS) return null;
+  const round = used + 1;
+  forgeRounds.set(instanceId, round);
+  return round;
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +659,65 @@ const VIDEO_CARD_PROPERTIES = {
   description: { type: "string", description: "Help text shown above the player" },
 };
 
+// Prompt forge. The gist card takes nothing beyond its optional wording, so
+// only its wording is exposed; the refine and final cards carry the flow.
+const PROMPT_GIST_CARD_PROPERTIES = {
+  ...COMMON_CARD_PROPERTIES,
+  title: { type: "string", description: `Card title (default "Efficient prompt - gist")` },
+  question: {
+    type: "string",
+    description: "Replaces the default gist question when you already know what they are circling",
+  },
+  placeholder: { type: "string", description: "Placeholder text inside the gist textarea" },
+};
+
+const PROMPT_REFINE_CARD_PROPERTIES = {
+  ...COMMON_CARD_PROPERTIES,
+  title: { type: "string", description: "Card title; defaults to the round number" },
+  round: {
+    type: "integer",
+    minimum: 1,
+    maximum: MAX_REFINE_ROUNDS,
+    description:
+      "Which refine round this is. create_prompt_refine_card counts rounds itself and " +
+      "overrides this; it matters only when re-rendering a card through update_card.",
+  },
+  questions: {
+    type: "array",
+    minItems: 1,
+    description: "The fewest multiple-choice questions that close the gaps the gist left",
+    items: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Short token name the answer is reported under" },
+        question: { type: "string", description: "The question, as plain text" },
+        options: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string" },
+          description: "Choices offered; a free-text \"Other\" is added automatically",
+        },
+        multiple: {
+          type: "boolean",
+          description: "Checkboxes instead of radios, for questions with several true answers",
+        },
+        help: { type: "string", description: "Optional hint under the choices" },
+      },
+      required: ["name", "question", "options"],
+    },
+  },
+};
+
+const PROMPT_FINAL_CARD_PROPERTIES = {
+  ...COMMON_CARD_PROPERTIES,
+  title: { type: "string", description: `Card title (default "Efficient prompt - ready to send")` },
+  prompt: { type: "string", description: "The finished prompt, as plain text" },
+  notes: {
+    type: "string",
+    description: "One line on what the prompt assumes or leaves out, shown under it",
+  },
+};
+
 const KIND_SCHEMAS = {
   tabs: TAB_CARD_PROPERTIES,
   table: TABLE_CARD_PROPERTIES,
@@ -644,6 +727,9 @@ const KIND_SCHEMAS = {
   list: LIST_CARD_PROPERTIES,
   document: MARKDOWN_CARD_PROPERTIES,
   video: VIDEO_CARD_PROPERTIES,
+  "prompt-gist": PROMPT_GIST_CARD_PROPERTIES,
+  "prompt-refine": PROMPT_REFINE_CARD_PROPERTIES,
+  "prompt-final": PROMPT_FINAL_CARD_PROPERTIES,
 };
 
 // Required fields per kind, mirroring the matching create action. update_card
@@ -657,6 +743,9 @@ const KIND_REQUIRED_FIELDS = {
   list: ["title", "items"],
   document: ["markdown"],
   video: ["title", "src"],
+  "prompt-gist": [],
+  "prompt-refine": ["questions"],
+  "prompt-final": ["prompt"],
 };
 
 function cardActionSchema(properties, required) {
@@ -733,6 +822,70 @@ const canvas = createCanvas({
       FORM_CARD_PROPERTIES,
       ["title", "fields"],
     ),
+    {
+      name: "create_prompt_gist_card",
+      description:
+        "Open step 1 of the efficient-prompt flow: a card asking the user to describe, in no more " +
+        `than ${GIST_MAX_CHARS} characters, the gist of where they want to go. Call this when a message ` +
+        "is tagged [efficient-prompt], or when the user asks for help writing a prompt. Submitting " +
+        "the card sends back the gist along with the rules for the rest of the flow, so answer with " +
+        "the card and wait rather than asking follow-up questions in chat.",
+      inputSchema: cardActionSchema(PROMPT_GIST_CARD_PROPERTIES, []),
+      handler: (ctx) => {
+        try {
+          const result = createCardAction(ctx, "prompt-gist");
+          startForge(ctx.instanceId);
+          return result;
+        } catch (error) {
+          return actionError(error);
+        }
+      },
+    },
+    {
+      name: "create_prompt_refine_card",
+      description:
+        "Step 2 of the efficient-prompt flow: ask the fewest multiple-choice questions that close " +
+        "the gaps the gist left. Radios by default, checkboxes when several answers can be true at " +
+        `once; every question also gets a free-text "Other". At most ${MAX_REFINE_ROUNDS} refine rounds, counted ` +
+        "by the canvas. Skip this step entirely when the gist is already clear enough to write the " +
+        "prompt.",
+      inputSchema: cardActionSchema(PROMPT_REFINE_CARD_PROPERTIES, ["questions"]),
+      handler: (ctx) => {
+        try {
+          const round = nextForgeRound(ctx.instanceId);
+          if (round === null) {
+            return {
+              error:
+                `All ${MAX_REFINE_ROUNDS} refine rounds are used up. Call create_efficient_prompt_card ` +
+                "with the best prompt the answers so far support.",
+            };
+          }
+          return createCardAction(ctx, "prompt-refine", { ...(ctx.input ?? {}), round });
+        } catch (error) {
+          return actionError(error);
+        }
+      },
+    },
+    {
+      name: "create_efficient_prompt_card",
+      description:
+        "Step 3 of the efficient-prompt flow: hand back the finished prompt in an editable card " +
+        "with a character and token count, a copy button, and a send button gated behind a " +
+        "confirmation box. Write one prompt that is verbose only where verbosity buys a complete " +
+        "first-pass answer: no restated context, no filler, an explicit output shape. Do not act " +
+        "on the prompt here - wait for the user to send it back as a message.",
+      inputSchema: cardActionSchema(PROMPT_FINAL_CARD_PROPERTIES, ["prompt"]),
+      handler: (ctx) => {
+        try {
+          const result = createCardAction(ctx, "prompt-final");
+          // The flow is over; a later gist card starts the count again.
+          forgeRounds.delete(ctx.instanceId);
+          return result;
+        } catch (error) {
+          return actionError(error);
+        }
+      },
+    },
     makeCreateAction(
       "create_reveal_card",
       "show-hide",
@@ -1031,6 +1184,24 @@ async function handleCanvasRequest(req, res, servedInstanceId) {
       }
       const delivered = await sendPrompt(prompt);
       json(res, 200, { ok: true, delivered });
+      return;
+    }
+
+    // "Generate Efficient Verbose Prompt" in the canvas right-click menu.
+    // The gist card is built here rather than asked for, so opening the flow
+    // costs the conversation nothing: the agent is first involved when the
+    // user submits the gist.
+    if (req.method === "POST" && url.pathname === "/api/forge") {
+      const card = buildCard("prompt-gist", {});
+      instance.cards.push(card);
+      while (instance.cards.length > MAX_CARDS) {
+        const dropped = instance.cards.shift();
+        broadcast(instanceId, "remove", { cardId: dropped.id });
+      }
+      startForge(instanceId);
+      markDirty(instance);
+      broadcast(instanceId, "upsert", { card });
+      json(res, 200, { ok: true, cardId: card.id });
       return;
     }
 

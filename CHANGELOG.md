@@ -7,6 +7,102 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha] - 2026-08-27
+
+### Fixed
+
+- Right-click menu items that send a prompt no longer appear to do nothing. Choosing a
+  model-defined context action, or "Generate Efficient Verbose Prompt", handed the prompt
+  to the host and then said nothing at all: on a host that receives `ui/message` without
+  answering it, the click was indistinguishable from a broken build. Only the items that
+  send a prompt were affected - "Copy card" is local and kept working - so the failure
+  looked arbitrary. A menu prompt now always reports its outcome: confirmed when the host
+  acknowledges the handoff, and otherwise, after a short wait, an in-card panel holding
+  the prompt with a copy button, since an unacknowledged send must never be reported as
+  sent. The MCP-UI postMessage fallback has no reply channel at all, so it always takes
+  the second path.
+- The canvas port had the same defect from the other direction: menu actions called
+  `/api/prompt` and discarded both the `delivered` flag and any error. The result is now
+  shown as a toast, and a prompt the agent could not be reached with goes to the
+  clipboard.
+
+### Added
+
+- Efficient prompt builder. Every card's right-click menu now carries a built-in
+  "Generate Efficient Verbose Prompt" item, alongside "Copy card" and whatever actions the
+  model defined. It opens a three-step flow that turns a short description into one lean,
+  self-contained prompt:
+  1. A gist card asks, in no more than 350 characters, where the user wants to go. A live
+     counter tracks what is typed, and the submission carries the rules for the rest of the
+     flow, so nothing is restated later.
+  2. Up to three refine rounds ask the fewest multiple-choice questions that close the gaps
+     the gist left - radios by default, checkboxes where several answers can be true at
+     once, and a free-text "Other" on every question. A question left blank comes back as
+     "no preference" rather than as an unanswered token. The flow skips this step entirely
+     when the gist is already clear.
+  3. The finished prompt renders with its character and token count, editable in place.
+     A **Send this prompt** button opens a confirmation box; the prompt reaches the
+     conversation only when that box is accepted, and what goes is whatever the textarea
+     holds at that moment. A copy button covers hosts with no channel back to the chat.
+
+  The saving is in the shape of the exchange: the model reads a bounded gist and a bounded
+  set of answers instead of a rambling thread, and answers with cards instead of prose, so
+  the only long text in the whole flow is the prompt the user wanted.
+
+- Syntax highlighting for source files in a code tour, behind a **Raw | Code** toggle. A file
+  in `create_code_tour_card` used to be flat monospace text; it now reads the way a repository
+  browser shows it - highlighted for its own language, line-numbered in an unselectable
+  gutter, with Code as the view on arrival and Raw one click away. Nineteen languages ship
+  with grammars (C, C++, C#, CSS, Go, Java, JavaScript, JSON, JSX, PHP, Python, Ruby, Rust,
+  shell, SQL, TOML, TSX, TypeScript, YAML) plus the aliases a model reaches for (`node`,
+  `js`, `py`, `golang`, `yml`). The grammar is chosen from the file's own detected language
+  and compiled on first use, so a tour of Python files never touches the Rust rules and a
+  language with no grammar renders as the plain code block it always did.
+
+  Raw is the code view with its styling switched off rather than a second copy of the file,
+  so the toggle costs no extra markup; the line-number gutter is a sibling of the code, so
+  the copy button still hands back the file and nothing else.
+- Markdown files in a code tour render as a page instead of a fenced code block. A README
+  or guide in `create_code_tour_card` was shown as source like any other file, which is the
+  one case where that is the wrong default. `.md`, `.markdown`, `.mdown`, `.mkd`, and `.mdx`
+  files now render through the existing marked-based markdown pipeline - headings, card-styled
+  tables, links, fenced code with copy buttons - with a **Raw | Rendered** toggle back to the
+  source. Rendered is the arrival view; the raw pane is the ordinary code block and its copy
+  button still returns the file byte for byte. Both views ship in the card, so the toggle
+  costs no round trip and the choice survives switching file tabs. Unlike the markdown card,
+  a file view keeps its own first H1: that heading belongs to the page, not to a card title.
+  Every other extension renders exactly as before.
+- Three MCP tools behind that flow: `create_prompt_gist_card`,
+  `create_prompt_refine_card`, and `create_efficient_prompt_card`. The same three exist as
+  canvas actions in the Copilot extension, and the same three card kinds
+  (`prompt-gist`, `prompt-refine`, `prompt-final`) exist as spec kinds in the Claude
+  artifact port.
+
+### Changed
+
+- A code tour's size budget measures the rendered panel for any file that is highlighted or
+  rendered, not the file's escaped source. Highlighted markup runs roughly two to three times
+  the size of plain source, so a large tour now splits into more parts than it used to. That
+  is the intended trade: the packer and the renderer can never disagree, and a tour cannot
+  quietly overflow the host's result ceiling. Files with no grammar are costed exactly as
+  before.
+- The markdown file view and the new code file view share one toggle mechanism
+  (`data-mcc-view`, `data-mcc-view-set`, `data-mcc-pane`) and one runtime handler, rather than
+  each carrying its own near-identical implementation.
+- The canvas extension counts refine rounds itself rather than trusting the round number an
+  agent supplies, and refuses a fourth round with an error that says to write the prompt
+  now. Opening the flow from the canvas menu costs the conversation nothing: the extension
+  builds the gist card directly, so the agent is first involved when the gist is submitted.
+- The right-click menu opens over the empty deck as well as over a card in the canvas and
+  artifact ports. Card-specific items still require a card; the prompt builder does not.
+- Form answers are gathered per field name instead of assigned, and empty values are
+  dropped. A choice group and a text input can now share one name and arrive as a single
+  comma-joined answer, and an unanswered group renders as an empty value rather than
+  leaving a literal `{{name}}` in the built prompt.
+- The Claude artifact port strips the send button and confirmation box from the finished
+  prompt card. That page has no channel to the conversation, so the clipboard is the whole
+  story there and the card now says so.
+
 ## [0.1.3-alpha] - 2026-08-18
 
 Follow-up to a third live review pass, which exercised every card tool against a running

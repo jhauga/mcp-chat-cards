@@ -1,6 +1,6 @@
 {
   "name": "mcp-chat-cards",
-  "version": "0.1.3-alpha",
+  "version": "0.2.0-alpha",
   "description": "MCP server that renders interactive HTML cards (tabs, tables, forms, charts, video, show/hide, sequential lists) inside desktop chat clients.",
   "license": "MIT",
   "author": "John Hauagabook",

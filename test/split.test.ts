@@ -1,3 +1,4 @@
+import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it } from "vitest";
 import { packByBudget } from "../src/util/budget.js";
 import { buildMarkdownCard } from "../src/cards/doc.js";
@@ -92,7 +93,12 @@ describe("multi-part code tours", () => {
   it("truncates oversized single files with a notice", () => {
     const huge = [{ path: "src/big.rs", content: "x".repeat(40_000) }];
     const card = buildCodeTourCard({ title: "Huge", files: huge });
-    expect(card.html).toContain("truncated: 24000 more character(s)");
+    // Asserted on what the reader sees rather than on the markup: a
+    // highlighted file wraps the notice's number in a token span, so the
+    // notice is no longer one contiguous string in the HTML.
+    const code = new JSDOM(card.html).window.document.querySelector("pre.mcc-code");
+    expect(code?.textContent?.length).toBeLessThan(40_000);
+    expect(code?.textContent).toContain("truncated: 28000 more character(s)");
   });
 
   it("preserves the caller's teaching order instead of alphabetizing", () => {

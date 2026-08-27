@@ -29,8 +29,11 @@ receive each card as a self-contained embedded HTML resource.
 - **Document cards**: render a markdown document (a guide or walkthrough the model wrote)
   as one interactive card with collapsible sections, styled tables, and copyable code.
 - **Code tour cards**: present a project as one tab per source file, in the order the
-  files are given (README and manifests hoisted first), with language-tagged code and
-  copy buttons.
+  files are given (README and manifests hoisted first). Source files are syntax-highlighted
+  for their detected language and line-numbered behind a **Raw | Code** toggle, the way a
+  repository browser shows a file. Markdown files render as a formatted page instead, behind
+  a **Raw | Rendered** toggle - a README in a tour reads as documentation, and the source is
+  still one click away.
 - **Model-generated file ingestion**: read local text files and unpack zip archives the
   model produced earlier in the conversation, so its own deliverables plug straight into
   cards without retyping anything.
@@ -47,6 +50,13 @@ receive each card as a self-contained embedded HTML resource.
 - **Header toggles**: every card header has a `</>` button that shows or hides the card's
   own HTML source in a code panel, and a chevron button beside it that collapses the card
   down to its header row and expands it again.
+- **Efficient prompt builder**: every card's right-click menu has a built-in "Generate
+  Efficient Verbose Prompt" item that opens a three-step flow: a 350-character gist, up to
+  three rounds of multiple-choice refinement (each question with a free-text "Other"), and
+  a finished prompt shown with its character and token count, editable in place, copyable,
+  and sent only after a confirmation box. The model reads a bounded gist and bounded
+  answers instead of a rambling thread, so the only long text in the exchange is the prompt
+  the user wanted.
 - **Copyable cards**: every card's right-click menu has a built-in "Copy card" item that
   copies the standalone HTML, mirroring the header button. For visual placement,
   `get_insert_bookmarklet` returns a bookmarklet that shows a floating "Insert Card" item
@@ -101,7 +111,10 @@ for hosts that support MCP UI resources, cards render as sandboxed iframes.
 | `create_reveal_card` | Collapsible show/hide sections (text, HTML, or code per section) |
 | `create_list_card` | Nested sequential outline (1., 1.1., 1.1.1.) |
 | `create_markdown_card` | Render a markdown document (content or file path) as one card |
-| `create_code_tour_card` | Render a project (zip path or explicit files) as file tabs |
+| `create_code_tour_card` | Render a project (zip path or explicit files) as file tabs: highlighted source behind Raw/Code, `.md` behind Raw/Rendered |
+| `create_prompt_gist_card` | Step 1 of the efficient-prompt flow: collect a 350-character gist |
+| `create_prompt_refine_card` | Step 2: multiple-choice questions that close the gaps (max 3 rounds) |
+| `create_efficient_prompt_card` | Step 3: the finished prompt, editable, copyable, sent on confirmation |
 | `read_local_file` | Read a local text file for review or card building |
 | `unpack_archive` | List a local zip and return its text file contents |
 | `fetch_reference` | Fetch a public page and return structured extracted data |
@@ -141,6 +154,47 @@ for hosts that support MCP UI resources, cards render as sandboxed iframes.
 When the user submits the card, the filled template is posted to the host as the next
 prompt. If the host does not consume the message, the card reveals the prompt text with a
 copy button as a fallback.
+
+### Example: the efficient-prompt flow
+
+"Generate Efficient Verbose Prompt" in any card's right-click menu sends a message tagged
+`[efficient-prompt]`. The model answers with `create_prompt_gist_card`, and the gist the
+user submits carries the rules for the rest of the flow, so nothing has to be restated:
+
+```json
+{
+  "round": 1,
+  "questions": [
+    {
+      "name": "depth",
+      "question": "How much detail?",
+      "options": ["Overview", "Step by step", "Line by line"]
+    },
+    {
+      "name": "output",
+      "question": "What should come back?",
+      "options": ["A table", "A checklist", "Prose"],
+      "multiple": true
+    }
+  ]
+}
+```
+
+Each question also renders a free-text "Other" input under the group's own name, so a typed
+answer arrives joined with the checked ones. Anything left blank comes back empty, which the
+submitted prompt spells out as "no preference". The flow ends with:
+
+```json
+{
+  "prompt": "Audit config/loader.py for unhandled error paths. Output: a table of file, line, failure mode, and fix, then one line on the riskiest one.",
+  "notes": "Assumes the current logging setup stays."
+}
+```
+
+The card shows that prompt with its character and token count and a **Send this prompt**
+button. Clicking it opens a confirmation box; only "Yes, send it" hands the prompt to the
+conversation. On hosts with no channel back to the chat, the copy button is the whole
+story: the prompt is copied and the user pastes it as their next message.
 
 ### Example: plug-n-play with files the model generates
 
@@ -307,8 +361,33 @@ same goes for Windows paths sent to a POSIX server and for unexpanded `~/` paths
   a larger-looking one may not. Read `parts.hasMore` rather than predicting from input
   size. A markdown document with no H2 headings has no split boundary and always renders
   as one part.
+- In a code tour, a source file whose language the highlighter knows gets a **Raw | Code**
+  toggle. Code is the view on arrival: syntax-highlighted, with line numbers in an
+  unselectable gutter, so a copy or a drag through the file picks up the file and not its
+  numbering. Raw is the same text with the highlighting and gutter switched off, so the card
+  carries one copy of the source rather than two. Languages covered: C, C++, C#, CSS, Go,
+  Java, JavaScript, JSON, JSX, PHP, Python, Ruby, Rust, shell, SQL, TOML, TSX, TypeScript,
+  and YAML, plus the usual aliases (`node`, `js`, `py`, `golang`, `yml`, and so on). Anything
+  else renders as the plain code block it always did.
+- Highlighted files cost more card budget than plain ones (roughly two to three times, since
+  every token carries a span), and the packer measures the rendered panel, so a large tour
+  splits into more parts than it used to rather than overflowing a card.
+- In a code tour, a `.md`, `.markdown`, or `.mdx` file gets a Raw/Rendered toggle. Rendered
+  is the view on arrival and shows the document as a page (headings, card-styled tables,
+  links, fenced code with copy buttons, never folded into reveals); Raw is the ordinary
+  code block, whitespace preserved, whose copy button returns the source byte for byte.
+  Both views ship inside the card, so switching costs no round trip and the choice survives
+  switching between file tabs. Every other extension is unchanged.
 - Right-click context actions are defined by the model per card; `{{selection}}` in an
-  action prompt is replaced with the user's selected text.
+  action prompt is replaced with the user's selected text. Two items are always present
+  regardless of what the model defined: "Generate Efficient Verbose Prompt" and "Copy card".
+- The finished prompt card never sends on a single click. The first click opens a
+  confirmation box; the prompt goes to the conversation only when that box is accepted, and
+  what is sent is whatever the textarea holds at that moment, edits included.
+- Form answers are gathered per field name, and empty values are dropped, so a choice group
+  and a text input can share one name and arrive as a single comma-joined answer. Every
+  named control still yields a key, so an unanswered group renders as an empty value rather
+  than leaving a literal `{{name}}` in the prompt.
 
 ## Security
 

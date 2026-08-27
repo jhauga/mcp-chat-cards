@@ -169,6 +169,29 @@ table.mcc-table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .mcc-form-fallback.mcc-visible { display: block; }
 .mcc-form-fallback textarea { width: 100%; min-height: 90px; font-family: Consolas, monospace; font-size: 12px; }
 
+/* Prompt forge: gist, refine, and finished-prompt cards */
+.mcc-forge-meta { display: block; margin-top: 2px; }
+.mcc-forge-q { margin-bottom: 4px; }
+.mcc-other { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.mcc-field .mcc-other input[type="text"] { flex: 1 1 auto; width: auto; min-width: 0; }
+.mcc-field textarea.mcc-forge-prompt {
+  min-height: 150px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+}
+.mcc-forge-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.mcc-forge-notes { margin: 8px 0 0; }
+.mcc-confirm {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--mcc-accent);
+  border-radius: 6px;
+  background: var(--mcc-soft-bg);
+}
+.mcc-confirm[hidden] { display: none; }
+.mcc-confirm p { margin: 0; font-size: 13px; font-weight: 600; }
+.mcc-confirm .mcc-forge-actions { margin-top: 8px; }
+
 /* Code */
 .mcc-codewrap { position: relative; }
 .mcc-codewrap pre {
@@ -1764,6 +1787,223 @@ ${fieldHtml}
   );
 }
 
+// ---------------------------------------------------------------------------
+// Prompt forge
+// ---------------------------------------------------------------------------
+// Turns a short gist into one token-efficient prompt through at most three
+// cheap card round trips instead of an open-ended chat: a 350-character gist,
+// then multiple-choice rounds that close whatever the gist left open, then the
+// finished prompt, editable and sent only after an in-card confirmation.
+//
+// The saving comes from the shape of the exchange. Claude reads a bounded
+// gist and a bounded set of answers rather than a rambling thread, and answers
+// with cards rather than prose, so the only long text in the whole flow is the
+// prompt the user actually wanted.
+
+const GIST_MAX_CHARS = 350;
+const MAX_REFINE_ROUNDS = 3;
+
+// The right-click menu item that opens the flow. This page builds the gist
+// card itself, so no bootstrap prompt is needed here.
+const FORGE_MENU_LABEL = "Generate Efficient Verbose Prompt";
+
+// Every stage tags its prompt with this marker so Claude can tell a forge
+// round trip from an ordinary form submission at a glance.
+const FORGE_TAG = "[efficient-prompt]";
+
+// Sent once, when the gist is submitted: everything Claude needs to run the
+// remaining rounds without being told again.
+const FLOW_RULES = [
+  "Build one token-efficient prompt for that gist.",
+  "- Treat this conversation as context; never ask for something already said.",
+  "- Gist already clear enough? Skip straight to the last rule.",
+  `- Otherwise call create_prompt_refine_card with the fewest multiple-choice questions that close the gap. Hard limit: ${MAX_REFINE_ROUNDS} refine rounds.`,
+  "- Finish with create_efficient_prompt_card: a single prompt, verbose only where verbosity buys a complete first-pass answer, with no restated context, no filler, and an explicit output shape.",
+  "- Keep chat replies to one line; the cards carry the rest.",
+].join("\n");
+
+const FORGE_FALLBACK_HINT = "Copy the text below and send it to Claude as your next message.";
+
+// Rough enough to be useful and cheap enough to run on every keystroke.
+function estimateTokens(text) {
+  const trimmed = String(text ?? "").trim();
+  return trimmed.length === 0 ? 0 : Math.max(1, Math.ceil(trimmed.length / 4));
+}
+
+function forgeFormTail() {
+  return `<div>
+<button type="submit" class="mcc-btn mcc-btn-primary">Continue</button>
+</div>
+<p class="mcc-form-status" role="status" aria-live="polite"></p>
+<div class="mcc-form-fallback">
+<p class="mcc-help">${escapeHtml(FORGE_FALLBACK_HINT)}</p>
+<textarea readonly></textarea>
+<button type="button" class="mcc-btn mcc-copy-prompt">Copy prompt</button>
+</div>`;
+}
+
+function buildPromptGistCard(options = {}) {
+  const title = String(options.title ?? "").trim() || "Efficient prompt - gist";
+  const question =
+    String(options.question ?? "").trim() ||
+    `In no more than ${GIST_MAX_CHARS} characters, describe the gist of where you want to go:`;
+  const placeholder =
+    String(options.placeholder ?? "").trim() || "The one thing you want out of the next answer.";
+  const formId = uid("forge");
+  const fieldId = `${formId}-gist`;
+
+  // The template is what Claude actually reads, so it carries the rules for
+  // the whole flow: nothing further has to be sent later.
+  const promptTemplate = `${FORGE_TAG} round 0. Gist: {{gist}}\n\n${FLOW_RULES}`;
+
+  const body = `<section class="mcc-block">
+<p class="mcc-help">${escapeHtml(question)}</p>
+<form class="mcc-form" data-card-title="${escapeHtml(title)}" data-prompt-template="${escapeHtml(promptTemplate)}">
+<div class="mcc-field">
+<label for="${fieldId}">Gist<span class="mcc-required" title="Required">*</span></label>
+<textarea id="${fieldId}" name="gist" maxlength="${GIST_MAX_CHARS}" required placeholder="${escapeHtml(placeholder)}" data-mcc-counter></textarea>
+<span class="mcc-help mcc-forge-meta"><span class="mcc-count">0</span>/${GIST_MAX_CHARS} characters</span>
+</div>
+${forgeFormTail()}
+</form>
+</section>`;
+
+  return finishCard(
+    {
+      title,
+      subtitle: options.subtitle ?? "Step 1 of 3 - the short version",
+      kind: "prompt-gist",
+      body,
+      contextActions: options.contextActions,
+      draggable: false,
+    },
+    `Opened the efficient-prompt gist card "${title}". The user answers in ${GIST_MAX_CHARS} ` +
+      "characters or fewer; that submission carries the rules for the rest of the flow, so wait " +
+      "for it instead of asking follow-up questions in chat.",
+  );
+}
+
+function renderRefineQuestion(question, formId, index) {
+  const name = String(question?.name ?? "").trim();
+  if (name.length === 0) throw new Error("Every refine question needs a name.");
+  const options = normalizeFieldOptions(Array.isArray(question.options) ? question.options : []);
+  if (options.length === 0) throw new Error(`Refine question "${name}" needs at least one option.`);
+  const type = question.multiple ? "checkbox" : "radio";
+  const fieldId = `${formId}-${name.replace(/[^a-zA-Z0-9_-]/g, "_")}-${index}`;
+  const label = escapeHtml(question.question ?? name);
+  const help = question.help ? `<span class="mcc-help">${escapeHtml(question.help)}</span>` : "";
+
+  const choices = options
+    .map((option, choiceIndex) => {
+      const choiceId = `${fieldId}-${choiceIndex}`;
+      return `<label class="mcc-choice" for="${choiceId}">
+<input type="${type}" id="${choiceId}" name="${escapeHtml(name)}" value="${escapeHtml(option.value ?? option.label)}">
+${escapeHtml(option.label)}</label>`;
+    })
+    .join("\n");
+
+  // The free-text escape hatch shares the group's name, so a typed answer
+  // joins the checked ones under a single token instead of needing its own.
+  return `<fieldset class="mcc-field mcc-forge-q" style="border:none;padding:0;margin:0">
+<label>${label}</label>
+${choices}
+<div class="mcc-other">
+<label class="mcc-help" for="${fieldId}-other">Other</label>
+<input type="text" id="${fieldId}-other" name="${escapeHtml(name)}" placeholder="Something else - leave blank to skip">
+</div>${help}</fieldset>`;
+}
+
+function buildPromptRefineCard(options) {
+  const questions = Array.isArray(options?.questions) ? options.questions : [];
+  if (questions.length === 0) throw new Error("Provide at least one refine question.");
+  const round = Math.min(Math.max(Math.trunc(options.round ?? 1) || 1, 1), MAX_REFINE_ROUNDS);
+  const title =
+    String(options.title ?? "").trim() || `Efficient prompt - refine ${round} of ${MAX_REFINE_ROUNDS}`;
+  const formId = uid("forge");
+  const fields = questions.map((question, index) => renderRefineQuestion(question, formId, index)).join("\n");
+
+  const answerLines = questions
+    .map((question) => `- ${String(question.question ?? question.name).replace(/\s+/g, " ")}: {{${question.name}}}`)
+    .join("\n");
+  const remaining = MAX_REFINE_ROUNDS - round;
+  const nextStep =
+    remaining > 0
+      ? `Enough to write the prompt? Call create_efficient_prompt_card now. If not, one more refine round (${remaining} left).`
+      : "That was the last refine round. Call create_efficient_prompt_card now.";
+  const promptTemplate =
+    `${FORGE_TAG} round ${round} answers:\n${answerLines}\n\n` +
+    `A blank answer means no preference - choose for me. ${nextStep}`;
+
+  const body = `<section class="mcc-block">
+<p class="mcc-help">Pick what fits. Anything left blank is a free choice for Claude.</p>
+<form class="mcc-form" data-card-title="${escapeHtml(title)}" data-prompt-template="${escapeHtml(promptTemplate)}">
+${fields}
+${forgeFormTail()}
+</form>
+</section>`;
+
+  return finishCard(
+    {
+      title,
+      subtitle: options.subtitle ?? `Step 2 of 3 - round ${round} of ${MAX_REFINE_ROUNDS}`,
+      kind: "prompt-refine",
+      body,
+      contextActions: options.contextActions,
+      draggable: false,
+    },
+    `Opened refine round ${round} of ${MAX_REFINE_ROUNDS} with ${questions.length} question(s). ` +
+      (remaining > 0
+        ? `At most ${remaining} more refine round(s) before the prompt has to be written.`
+        : "No refine rounds remain: write the prompt from whatever comes back."),
+  );
+}
+
+function buildEfficientPromptCard(options) {
+  const prompt = String(options?.prompt ?? "").trim();
+  if (prompt.length === 0) throw new Error("The generated prompt is empty.");
+  const title = String(options.title ?? "").trim() || "Efficient prompt - ready to send";
+  const fieldId = uid("forge-out");
+  const notes = options.notes ? `<p class="mcc-help mcc-forge-notes">${escapeHtml(options.notes)}</p>` : "";
+
+  // Not a <form>: submitting this card sends the prompt itself, and that only
+  // happens once the confirmation box below has been answered.
+  const body = `<section class="mcc-block mcc-forge-final">
+<p class="mcc-help">Edit it if you like. Nothing is sent until you confirm.</p>
+<div class="mcc-field">
+<label for="${fieldId}">Token-efficient prompt</label>
+<textarea id="${fieldId}" class="mcc-forge-prompt" spellcheck="false" data-mcc-counter>${escapeHtml(prompt)}</textarea>
+<span class="mcc-help mcc-forge-meta"><span class="mcc-count">${prompt.length}</span> characters, roughly <span class="mcc-tokens">${estimateTokens(prompt)}</span> tokens</span>
+</div>
+${notes}
+<div class="mcc-forge-actions">
+<button type="button" class="mcc-btn mcc-btn-primary mcc-forge-send">Send this prompt</button>
+<button type="button" class="mcc-btn mcc-forge-copy">Copy prompt</button>
+</div>
+<div class="mcc-confirm" hidden>
+<p>Send this prompt to the conversation as your next message?</p>
+<div class="mcc-forge-actions">
+<button type="button" class="mcc-btn mcc-btn-primary mcc-confirm-yes">Yes, send it</button>
+<button type="button" class="mcc-btn mcc-confirm-no">Cancel</button>
+</div>
+</div>
+<p class="mcc-form-status" role="status" aria-live="polite"></p>
+</section>`;
+
+  return finishCard(
+    {
+      title,
+      subtitle: options.subtitle ?? "Step 3 of 3 - review, confirm, send",
+      kind: "prompt-final",
+      body,
+      contextActions: options.contextActions,
+      draggable: false,
+    },
+    `Rendered the finished prompt (${prompt.length} characters, roughly ${estimateTokens(prompt)} tokens) ` +
+      "for review. The user sends it after confirming, or copies it from the card; do not act on it " +
+      "until it arrives as a message.",
+  );
+}
+
 function buildRevealCard(options) {
   const title = requireTitle(options);
   const sections = Array.isArray(options.sections) ? options.sections : [];
@@ -1916,6 +2156,9 @@ const CARD_BUILDERS = {
   list: buildListCard,
   document: buildMarkdownCard,
   video: buildVideoCard,
+  "prompt-gist": buildPromptGistCard,
+  "prompt-refine": buildPromptRefineCard,
+  "prompt-final": buildEfficientPromptCard,
 };
 
 function buildCard(kind, options) {
@@ -1981,8 +2224,11 @@ function buildCard(kind, options) {
     holder.innerHTML = card.articleHtml.trim();
     var article = holder.content.firstElementChild;
     if (!article) return;
+    adaptForgeCard(article);
     deck.appendChild(article);
+    article.querySelectorAll("[data-mcc-counter]").forEach(updateCounter);
     updateChrome();
+    return article;
   }
 
   function removeCard(cardId) {
@@ -2066,6 +2312,57 @@ function buildCard(kind, options) {
     area.select();
     try { document.execCommand("copy"); } catch (e) {}
     area.remove();
+  }
+
+  // ---- prompt forge --------------------------------------------------------
+  // Roughly four characters to a token: close enough to tell a lean prompt
+  // from a bloated one, and cheap enough to recompute on every keystroke.
+  function estimateTokens(text) {
+    var trimmed = String(text == null ? "" : text).trim();
+    return trimmed.length === 0 ? 0 : Math.max(1, Math.ceil(trimmed.length / 4));
+  }
+
+  function updateCounter(area) {
+    var field = area.closest(".mcc-field");
+    if (!field) return;
+    var count = field.querySelector(".mcc-count");
+    if (!count) return;
+    var tokens = field.querySelector(".mcc-tokens");
+    count.textContent = String((area.value || "").length);
+    if (tokens) tokens.textContent = String(estimateTokens(area.value));
+  }
+
+  document.addEventListener("input", function (event) {
+    var area = event.target.closest ? event.target.closest("[data-mcc-counter]") : null;
+    if (area) updateCounter(area);
+  });
+
+  // The finished-prompt card ships with a send button and a confirmation box
+  // for hosts that can hand a prompt straight to the conversation. This page
+  // cannot, so the clipboard is the whole story here and the controls that
+  // would promise otherwise are taken out before the card is mounted.
+  function adaptForgeCard(article) {
+    article.querySelectorAll(".mcc-forge-final").forEach(function (panel) {
+      var box = panel.querySelector(".mcc-confirm");
+      if (box) box.remove();
+      var send = panel.querySelector(".mcc-forge-send");
+      if (send) send.remove();
+      var intro = panel.querySelector("p.mcc-help");
+      if (intro) intro.textContent = "Edit it if you like, then copy it and send it to Claude.";
+    });
+  }
+
+  // Opens the three-step flow that turns a short gist into one token-efficient
+  // prompt. The gist card is built right here, so nothing is spent until the
+  // user actually submits it.
+  function openPromptForge() {
+    try {
+      var article = mountCard(buildCard("prompt-gist", {}));
+      if (article && article.scrollIntoView) article.scrollIntoView({ block: "nearest" });
+      toast("Fill in the gist, then copy the prompt it makes");
+    } catch (e) {
+      toast("Could not open the prompt builder: " + (e && e.message ? e.message : e));
+    }
   }
 
   // Standalone document for "Copy card": the page theme plus the card article
@@ -2182,16 +2479,32 @@ function buildCard(kind, options) {
     var copyPrompt = event.target.closest(".mcc-copy-prompt");
     if (copyPrompt) {
       copyText(copyPrompt.closest(".mcc-form-fallback").querySelector("textarea").value, copyPrompt);
+      return;
+    }
+
+    var forgeCopy = event.target.closest(".mcc-forge-copy");
+    if (forgeCopy) {
+      var panel = forgeCopy.closest(".mcc-forge-final");
+      var area = panel ? panel.querySelector(".mcc-forge-prompt") : null;
+      if (!area) return;
+      copyText(area.value, forgeCopy);
+      var status = panel.querySelector(".mcc-form-status");
+      if (status) status.textContent = "Copied. Paste it into the chat as your next message.";
+      toast("Prompt copied - paste it into the chat");
     }
   });
 
   // ---- forms ---------------------------------------------------------------
+  // Empty values drop out so a choice group and a free-text "Other" input can
+  // share one name and arrive as a single comma-joined answer. Every named
+  // control still yields a key, so an unanswered group renders as an empty
+  // token instead of leaving a literal "{{name}}" in the prompt.
   function collectValues(form) {
     var data = new FormData(form);
     var values = {};
     Array.prototype.forEach.call(form.elements, function (element) {
       if (!element.name || values[element.name] !== undefined) return;
-      var all = data.getAll(element.name).map(String);
+      var all = data.getAll(element.name).map(String).filter(function (value) { return value !== ""; });
       values[element.name] = all.join(", ");
     });
     return values;
@@ -2307,39 +2620,53 @@ function buildCard(kind, options) {
   // ---- context menu (per-card model-defined actions) -----------------------
   function hideMenu() { menu.style.display = "none"; menu.innerHTML = ""; }
 
+  function menuItem(label, onClick) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", function () {
+      hideMenu();
+      onClick();
+    });
+    menu.appendChild(button);
+    return button;
+  }
+
+  function menuSeparator() {
+    var sep = document.createElement("div");
+    sep.className = "mcc-menu-sep";
+    menu.appendChild(sep);
+  }
+
+  // The menu opens over a card or over the empty deck: the model-defined
+  // actions and "Copy card" need a card, but the prompt forge does not.
   document.addEventListener("contextmenu", function (event) {
     var article = event.target.closest(".mcc-card");
-    if (!article) { hideMenu(); return; }
-    var config = configs[article.getAttribute("data-card-id")] || {};
-    var actions = config.contextActions || [];
+    // Editable fields keep the native menu: a user pasting their gist needs
+    // the host clipboard items more than a card-level action list.
+    if (event.target.closest("input, textarea, select, [contenteditable=\"true\"]")) {
+      hideMenu();
+      return;
+    }
+    var config = article ? configs[article.getAttribute("data-card-id")] || {} : {};
+    var actions = article ? config.contextActions || [] : [];
     event.preventDefault();
     var selection = String(window.getSelection() || "");
     menu.innerHTML = "";
     actions.forEach(function (action) {
-      var button = document.createElement("button");
-      button.type = "button";
-      button.textContent = action.label;
-      button.addEventListener("click", function () {
-        hideMenu();
+      menuItem(action.label, function () {
         copyText(action.prompt.split("{{selection}}").join(selection), null);
         toast("Prompt copied - paste it into the chat");
       });
-      menu.appendChild(button);
     });
-    if (actions.length > 0) {
-      var sep = document.createElement("div");
-      sep.className = "mcc-menu-sep";
-      menu.appendChild(sep);
+    if (actions.length > 0) menuSeparator();
+    menuItem("Generate Efficient Verbose Prompt", openPromptForge);
+    if (article) {
+      menuItem("Copy card", function () {
+        copyText(standaloneDocument(article), null);
+        toast("Card HTML copied");
+      });
     }
-    var copyItem = document.createElement("button");
-    copyItem.type = "button";
-    copyItem.textContent = "Copy card";
-    copyItem.addEventListener("click", function () {
-      hideMenu();
-      copyText(standaloneDocument(article), null);
-      toast("Card HTML copied");
-    });
-    menu.appendChild(copyItem);
     menu.style.display = "block";
     var x = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8);
     var y = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8);

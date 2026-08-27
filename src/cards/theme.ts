@@ -181,6 +181,136 @@ table.mcc-table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .mcc-form-fallback.mcc-visible { display: block; }
 .mcc-form-fallback textarea { width: 100%; min-height: 90px; font-family: Consolas, monospace; font-size: 12px; }
 
+/* File view: one file, more than one way to read it, with a toggle bar.
+   Raw | Code for source, Raw | Rendered for markdown. */
+.mcc-fileview-bar {
+  display: flex;
+  gap: 0;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.mcc-fileview-btn { border-radius: 0; }
+.mcc-fileview-btn:first-child { border-radius: 6px 0 0 6px; }
+.mcc-fileview-btn:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+.mcc-fileview-btn.mcc-active {
+  background: var(--mcc-primary);
+  border-color: var(--mcc-primary-dark);
+  color: #ffffff;
+  position: relative;
+  z-index: 1;
+}
+.mcc-fileview-pane[hidden] { display: none; }
+.mcc-fileview-pane > :first-child { margin-top: 0; }
+
+/* Code file view: line-number gutter beside the source. The gutter is a
+   sibling of the code and is never selected, so a copy or a drag through the
+   file picks up the file and not its numbering. */
+.mcc-code-scroll { display: flex; align-items: stretch; }
+.mcc-codefile .mcc-gutter {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 10px 8px 10px 12px;
+  border: none;
+  border-right: 1px solid var(--mcc-border);
+  background: transparent;
+  color: var(--mcc-muted);
+  text-align: right;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.mcc-codefile .mcc-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  line-height: 1.5;
+}
+.mcc-codefile .mcc-codewrap {
+  padding: 0;
+  background: var(--mcc-code-bg);
+  border: 1px solid var(--mcc-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+/* Syntax tokens. Chosen to stay legible on both card backgrounds rather than
+   to match any one editor theme. */
+.mcc-t-c { color: var(--mcc-muted); font-style: italic; }
+.mcc-t-s { color: var(--mcc-green); }
+.mcc-t-n { color: var(--mcc-accent); }
+.mcc-t-k { color: var(--mcc-primary-dark); font-weight: 600; }
+.mcc-t-y { color: var(--mcc-primary); }
+
+/* Raw view: the same text with the styling switched off, which is what a
+   repository browser shows for a raw file. Nothing is re-rendered, so the
+   card carries one copy of the source rather than two. */
+.mcc-fileview[data-mcc-view="raw"] .mcc-gutter { display: none; }
+.mcc-fileview[data-mcc-view="raw"] .mcc-t-c,
+.mcc-fileview[data-mcc-view="raw"] .mcc-t-s,
+.mcc-fileview[data-mcc-view="raw"] .mcc-t-n,
+.mcc-fileview[data-mcc-view="raw"] .mcc-t-k,
+.mcc-fileview[data-mcc-view="raw"] .mcc-t-y {
+  color: var(--mcc-text);
+  font-style: normal;
+  font-weight: normal;
+}
+
+/* Prompt outbox: what happened to a prompt the card handed to the host */
+#mcc-outbox {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--mcc-border);
+  border-left: 3px solid var(--mcc-primary);
+  border-radius: 6px;
+  background: var(--mcc-soft-bg);
+}
+#mcc-outbox[hidden] { display: none; }
+.mcc-outbox-status { margin: 0; font-size: 12px; color: var(--mcc-muted); }
+.mcc-outbox-body[hidden] { display: none; }
+.mcc-outbox-body textarea {
+  width: 100%;
+  min-height: 72px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--mcc-border);
+  border-radius: 6px;
+  background: var(--mcc-surface);
+  color: var(--mcc-text);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+.mcc-outbox-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+
+/* Prompt forge: gist, refine, and finished-prompt cards */
+.mcc-forge-meta { display: block; margin-top: 2px; }
+.mcc-forge-q { margin-bottom: 4px; }
+.mcc-other { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.mcc-field .mcc-other input[type="text"] { flex: 1 1 auto; width: auto; min-width: 0; }
+.mcc-field textarea.mcc-forge-prompt {
+  min-height: 150px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+}
+.mcc-forge-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.mcc-forge-notes { margin: 8px 0 0; }
+.mcc-confirm {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--mcc-accent);
+  border-radius: 6px;
+  background: var(--mcc-soft-bg);
+}
+.mcc-confirm[hidden] { display: none; }
+.mcc-confirm p { margin: 0; font-size: 13px; font-weight: 600; }
+.mcc-confirm .mcc-forge-actions { margin-top: 8px; }
+
 /* Code */
 .mcc-codewrap { position: relative; }
 .mcc-codewrap pre {

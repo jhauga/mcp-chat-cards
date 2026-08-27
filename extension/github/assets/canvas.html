@@ -169,6 +169,29 @@ table.mcc-table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .mcc-form-fallback.mcc-visible { display: block; }
 .mcc-form-fallback textarea { width: 100%; min-height: 90px; font-family: Consolas, monospace; font-size: 12px; }
 
+/* Prompt forge: gist, refine, and finished-prompt cards */
+.mcc-forge-meta { display: block; margin-top: 2px; }
+.mcc-forge-q { margin-bottom: 4px; }
+.mcc-other { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.mcc-field .mcc-other input[type="text"] { flex: 1 1 auto; width: auto; min-width: 0; }
+.mcc-field textarea.mcc-forge-prompt {
+  min-height: 150px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+}
+.mcc-forge-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.mcc-forge-notes { margin: 8px 0 0; }
+.mcc-confirm {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--mcc-accent);
+  border-radius: 6px;
+  background: var(--mcc-soft-bg);
+}
+.mcc-confirm[hidden] { display: none; }
+.mcc-confirm p { margin: 0; font-size: 13px; font-weight: 600; }
+.mcc-confirm .mcc-forge-actions { margin-top: 8px; }
+
 /* Code */
 .mcc-codewrap { position: relative; }
 .mcc-codewrap pre {
@@ -283,6 +306,25 @@ ul.mcc-legend .mcc-swatch { display: inline-block; width: 10px; height: 10px; bo
 }
 #mcc-menu button:hover { background: var(--mcc-primary-soft); color: var(--mcc-primary-dark); }
 #mcc-menu .mcc-menu-sep { border-top: 1px solid var(--mcc-border); margin: 4px 2px; }
+#mcc-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: 340px;
+  padding: 7px 14px;
+  background: var(--mcc-surface);
+  color: var(--mcc-text);
+  border: 1px solid var(--mcc-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(31, 35, 40, 0.18);
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+#mcc-toast.mcc-visible { opacity: 1; }
 
 p { margin: 0 0 8px; }
 img { max-width: 100%; height: auto; }
@@ -379,6 +421,7 @@ img { max-width: 100%; height: auto; }
 <main id="mcc-deck"></main>
 <div id="mcc-tooltip" role="tooltip"></div>
 <div id="mcc-menu"></div>
+<div id="mcc-toast" role="status" aria-live="polite"></div>
 
 <script>
 (function () {
@@ -431,6 +474,15 @@ img { max-width: 100%; height: auto; }
     });
   }
 
+  var toastEl = document.getElementById("mcc-toast");
+  var toastTimer = null;
+  function toast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add("mcc-visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove("mcc-visible"); }, 2600);
+  }
+
   function updateChrome() {
     var count = deck.children.length;
     countEl.textContent = count === 0 ? "" : "- " + count + " card" + (count === 1 ? "" : "s");
@@ -452,6 +504,7 @@ img { max-width: 100%; height: auto; }
     } else {
       deck.appendChild(article);
     }
+    article.querySelectorAll("[data-mcc-counter]").forEach(updateCounter);
     updateChrome();
   }
 
@@ -667,16 +720,98 @@ img { max-width: 100%; height: auto; }
     var copyPrompt = event.target.closest(".mcc-copy-prompt");
     if (copyPrompt) {
       copyText(copyPrompt.closest(".mcc-form-fallback").querySelector("textarea").value, copyPrompt);
+      return;
     }
+
+    if (handleForgeClick(event)) return;
   });
 
+  // ---- prompt forge ------------------------------------------------------
+  // Roughly four characters to a token: close enough to tell a lean prompt
+  // from a bloated one, and cheap enough to recompute on every keystroke.
+  function estimateTokens(text) {
+    var trimmed = String(text == null ? "" : text).trim();
+    return trimmed.length === 0 ? 0 : Math.max(1, Math.ceil(trimmed.length / 4));
+  }
+
+  function updateCounter(area) {
+    var field = area.closest(".mcc-field");
+    if (!field) return;
+    var count = field.querySelector(".mcc-count");
+    if (!count) return;
+    var tokens = field.querySelector(".mcc-tokens");
+    count.textContent = String((area.value || "").length);
+    if (tokens) tokens.textContent = String(estimateTokens(area.value));
+  }
+
+  document.addEventListener("input", function (event) {
+    var area = event.target.closest ? event.target.closest("[data-mcc-counter]") : null;
+    if (area) updateCounter(area);
+  });
+
+  function forgeStatus(panel, text) {
+    var status = panel.querySelector(".mcc-form-status");
+    if (status) status.textContent = text;
+  }
+
+  // The finished-prompt card sends nothing until the confirmation box has been
+  // answered, so a stray click cannot post a prompt to the conversation.
+  function handleForgeClick(event) {
+    var button = event.target.closest(
+      ".mcc-forge-send, .mcc-forge-copy, .mcc-confirm-yes, .mcc-confirm-no",
+    );
+    if (!button) return false;
+    var panel = button.closest(".mcc-forge-final");
+    if (!panel) return false;
+    var area = panel.querySelector(".mcc-forge-prompt");
+    var box = panel.querySelector(".mcc-confirm");
+    if (!area) return false;
+
+    if (button.classList.contains("mcc-forge-copy")) {
+      copyText(area.value, button);
+      forgeStatus(panel, "Copied. Paste it as your next message.");
+      return true;
+    }
+    if (button.classList.contains("mcc-forge-send")) {
+      if (area.value.trim() === "") {
+        forgeStatus(panel, "Nothing to send: the prompt is empty.");
+        return true;
+      }
+      forgeStatus(panel, "");
+      if (box) box.hidden = false;
+      return true;
+    }
+    if (button.classList.contains("mcc-confirm-no")) {
+      if (box) box.hidden = true;
+      forgeStatus(panel, "Not sent. Edit the prompt, or copy it and send it yourself.");
+      return true;
+    }
+    if (box) box.hidden = true;
+    forgeStatus(panel, "Sending to the conversation...");
+    api("/api/prompt", { prompt: area.value.trim() }).then(function (result) {
+      forgeStatus(
+        panel,
+        result.delivered
+          ? "Sent to the conversation ✓"
+          : "The agent could not be reached. Copy the prompt and send it yourself.",
+      );
+    }).catch(function () {
+      forgeStatus(panel, "Sending failed. Copy the prompt and send it yourself.");
+    });
+    return true;
+  }
+
   // ---- forms -------------------------------------------------------------
+  // Empty values drop out so a choice group and a free-text "Other" input can
+  // share one name and arrive as a single comma-joined answer. Every named
+  // control still yields a key, so an unanswered group renders as an empty
+  // token instead of leaving a literal "{{name}}" in the prompt.
   function collectValues(form) {
     var data = new FormData(form);
     var values = {};
     Array.prototype.forEach.call(form.elements, function (element) {
       if (!element.name || values[element.name] !== undefined) return;
-      var all = data.getAll(element.name).map(String);
+      var all = data.getAll(element.name).map(String).filter(function (value) { return value !== ""; });
       values[element.name] = all.join(", ");
     });
     return values;
@@ -810,37 +945,71 @@ img { max-width: 100%; height: auto; }
   // ---- context menu (per-card model-defined actions) ---------------------
   function hideMenu() { menu.style.display = "none"; menu.innerHTML = ""; }
 
+  function menuItem(label, onClick) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", function () {
+      hideMenu();
+      onClick();
+    });
+    menu.appendChild(button);
+    return button;
+  }
+
+  function menuSeparator() {
+    var sep = document.createElement("div");
+    sep.className = "mcc-menu-sep";
+    menu.appendChild(sep);
+  }
+
+  // The menu opens over a card or over the empty deck: the model-defined
+  // actions and "Copy card" need a card, but the prompt forge does not.
   document.addEventListener("contextmenu", function (event) {
     var article = event.target.closest(".mcc-card");
-    if (!article) { hideMenu(); return; }
-    var config = configs[article.getAttribute("data-card-id")] || {};
-    var actions = config.contextActions || [];
+    // Editable fields keep the native menu: a user pasting their gist needs
+    // the host clipboard items more than a card-level action list.
+    if (event.target.closest("input, textarea, select, [contenteditable=\"true\"]")) {
+      hideMenu();
+      return;
+    }
+    var config = article ? configs[article.getAttribute("data-card-id")] || {} : {};
+    var actions = article ? config.contextActions || [] : [];
     event.preventDefault();
     var selection = String(window.getSelection() || "");
     menu.innerHTML = "";
     actions.forEach(function (action) {
-      var button = document.createElement("button");
-      button.type = "button";
-      button.textContent = action.label;
-      button.addEventListener("click", function () {
-        hideMenu();
-        api("/api/prompt", { prompt: action.prompt.split("{{selection}}").join(selection) }).catch(function () {});
+      menuItem(action.label, function () {
+        var prompt = action.prompt.split("{{selection}}").join(selection);
+        // A menu item that silently does nothing is indistinguishable from
+        // a broken one, so the outcome is always reported. When the agent
+        // cannot be reached the prompt goes to the clipboard instead.
+        api("/api/prompt", { prompt: prompt }).then(function (result) {
+          if (result.delivered) {
+            toast("Sent to the conversation");
+          } else {
+            copyText(prompt, null);
+            toast("The agent could not be reached - prompt copied, paste it into the chat");
+          }
+        }).catch(function () {
+          copyText(prompt, null);
+          toast("Sending failed - prompt copied, paste it into the chat");
+        });
       });
-      menu.appendChild(button);
     });
-    if (actions.length > 0) {
-      var sep = document.createElement("div");
-      sep.className = "mcc-menu-sep";
-      menu.appendChild(sep);
+    if (actions.length > 0) menuSeparator();
+    // Always offered. The gist card is built by the extension rather than
+    // asked for, so opening the flow costs the conversation nothing.
+    menuItem("Generate Efficient Verbose Prompt", function () {
+      api("/api/forge", {}).catch(function () {
+        toast("Could not open the prompt builder");
+      });
+    });
+    if (article) {
+      menuItem("Copy card", function () {
+        copyText(standaloneDocument(article), null);
+      });
     }
-    var copyItem = document.createElement("button");
-    copyItem.type = "button";
-    copyItem.textContent = "Copy card";
-    copyItem.addEventListener("click", function () {
-      hideMenu();
-      copyText(standaloneDocument(article), null);
-    });
-    menu.appendChild(copyItem);
     menu.style.display = "block";
     var x = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8);
     var y = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8);

@@ -5,7 +5,8 @@
 // fold into show/hide reveals and be packed into multi-part cards.
 import { Marked, type RendererObject } from "marked";
 import { parse, HTMLElement } from "node-html-parser";
-import { escapeHtml, sanitizeHtml, textToParagraphs } from "./html.js";
+import { escapeHtml, renderCodeBlock, sanitizeHtml, textToParagraphs } from "./html.js";
+import { renderFileView } from "./file-view.js";
 
 // marked's default text renderer leaves a well-formed character reference
 // alone, so an author who writes "&amp;amp;" to document escaping gets a bare
@@ -173,6 +174,43 @@ export function renderSections(
 </details>`);
   }
   return parts.join("\n");
+}
+
+// A markdown FILE shown the way a code host shows one: the prose rendered as
+// a page, with a toggle back to the source. A .md file in a code tour used to
+// be a fenced code block like any other source file, which is the one case
+// where that is the wrong default - nobody reads a README as source unless
+// they mean to. Both views ship in the panel and the toggle is client-side,
+// so switching costs no round trip.
+//
+// Rendered uses the same document styling as the markdown card (one flowing
+// page, never folded into reveals - a file view is a page, not an outline).
+// Raw is the ordinary card code block: monospace, whitespace preserved, and
+// the copy button that gives back exactly what was passed in.
+export function renderMarkdownFileView(markdown: string, label?: string): string {
+  const doc = parseMarkdownDocument(markdown);
+  // parseMarkdownDocument lifts the first H1 out to become a CARD title. A
+  // file view is not a card title - the heading belongs to the page, the way
+  // it does when the same file is viewed anywhere else - so it goes back.
+  const heading = doc.title ? `<h1>${escapeHtml(doc.title)}</h1>` : "";
+  const body = renderSections(doc.sections, { folded: false });
+  const rendered = (heading + body).trim().length > 0
+    ? heading + body
+    : '<p class="mcc-help">This file is empty.</p>';
+  // Rendered markdown is a different document from its source, so unlike the
+  // code file view this one really does carry two panes.
+  return renderFileView({
+    viewOptions: [
+      { name: "raw", label: "Raw" },
+      { name: "rendered", label: "Rendered" },
+    ],
+    active: "rendered",
+    label,
+    extraClass: "mcc-mdfile",
+    body:
+      `<div class="mcc-fileview-pane mcc-doc" data-mcc-pane="rendered">${rendered}</div>\n` +
+      `<div class="mcc-fileview-pane" data-mcc-pane="raw" hidden>${renderCodeBlock(markdown, "markdown")}</div>`,
+  });
 }
 
 export interface MarkdownToCardResult {

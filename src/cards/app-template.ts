@@ -71,14 +71,20 @@ export function buildCardTemplateHtml(serverVersion: string): string {
     send({ jsonrpc: "2.0", method: method, params: params || {} });
   }
 
-  // Card runtime events are translated to MCP Apps requests.
+  // Card runtime events are translated to MCP Apps requests. "prompt" and
+  // "link" return the request promise, resolving true once the host answers
+  // and false when it answers with an error. A host that never answers leaves
+  // the promise pending forever, which is why the runtime also runs its own
+  // timeout: an unanswered handoff must not be reported to the user as sent.
   window.__mccHostBridge = {
     post: function (type, payload) {
       payload = payload || {};
       if (type === "prompt") {
-        request("ui/message", { role: "user", content: { type: "text", text: payload.prompt || "" } });
+        return request("ui/message", { role: "user", content: { type: "text", text: payload.prompt || "" } })
+          .then(function (result) { return result !== null; });
       } else if (type === "link") {
-        request("ui/open-link", { url: payload.url || "" });
+        return request("ui/open-link", { url: payload.url || "" })
+          .then(function (result) { return result !== null; });
       } else if (type === "notify") {
         notify("notifications/message", {
           level: "info",

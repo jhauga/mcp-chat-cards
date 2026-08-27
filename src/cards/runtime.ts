@@ -46,6 +46,110 @@ export const CARD_RUNTIME_JS = `(function () {
     post("notify", { message: cardTag(cfg) + ":prompt-sent" });
   }
 
+  // ---- Prompt handoff with acknowledgement ----------------------------
+  // A prompt handed to the host either lands in the conversation or it does
+  // not, and the card cannot tell which from the send alone: the MCP Apps
+  // bridge answers a ui/message request, but the MCP-UI postMessage fallback
+  // has no reply channel at all. So the outcome is always shown. Anything
+  // that is not acknowledged inside this window is treated as undelivered and
+  // the prompt is put in front of the user to copy, because a menu item that
+  // silently does nothing is indistinguishable from a broken one.
+  var PROMPT_ACK_MS = 1500;
+
+  function postPrompt(payload) {
+    var bridge = window.__mccHostBridge;
+    if (bridge && typeof bridge.post === "function") {
+      try { return bridge.post("prompt", payload); } catch (err) { return undefined; }
+    }
+    post("prompt", payload);
+    return undefined;
+  }
+
+  // surface.setStatus(text) reports progress; surface.showFallback(text)
+  // gives the user a way to send the prompt by hand.
+  function deliverPrompt(cfg, text, surface) {
+    var settled = false;
+    surface.setStatus("Sending to the conversation...");
+    var ack = postPrompt({ prompt: text });
+    post("notify", { message: cardTag(cfg) + ":prompt-sent" });
+
+    function finish(delivered) {
+      if (settled) return;
+      settled = true;
+      if (delivered) {
+        surface.setStatus("Sent to the conversation as the next prompt.");
+        post("notify", { message: cardTag(cfg) + ":prompt-delivered" });
+        return;
+      }
+      surface.setStatus("The chat client did not confirm this. Copy it and send it yourself.");
+      surface.showFallback(text);
+      post("notify", { message: cardTag(cfg) + ":prompt-unconfirmed" });
+    }
+
+    if (ack && typeof ack.then === "function") {
+      ack.then(function (ok) { finish(ok !== false); }, function () { finish(false); });
+    }
+    setTimeout(function () { finish(false); }, PROMPT_ACK_MS);
+  }
+
+  // The card-level outbox: where a prompt that did not come from a form
+  // reports its outcome. It is an in-flow block at the end of the card body
+  // rather than a floating layer, so the host's size observer grows the
+  // frame to fit it instead of clipping it.
+  function ensureOutbox() {
+    var outbox = document.getElementById("mcc-outbox");
+    if (outbox) return outbox;
+    var host = document.querySelector(".mcc-card .mcc-body") || document.body;
+    outbox = document.createElement("div");
+    outbox.id = "mcc-outbox";
+    outbox.hidden = true;
+    outbox.innerHTML =
+      '<p class="mcc-outbox-status" role="status" aria-live="polite"></p>' +
+      '<div class="mcc-outbox-body" hidden>' +
+      '<textarea readonly aria-label="Prompt to copy"></textarea>' +
+      '<div class="mcc-outbox-actions">' +
+      '<button type="button" class="mcc-btn mcc-btn-primary mcc-outbox-copy">Copy prompt</button>' +
+      '<button type="button" class="mcc-btn mcc-outbox-close">Dismiss</button>' +
+      "</div></div>";
+    host.appendChild(outbox);
+    return outbox;
+  }
+
+  function outboxSurface(cfg) {
+    return {
+      setStatus: function (text) {
+        var outbox = ensureOutbox();
+        outbox.hidden = false;
+        var status = outbox.querySelector(".mcc-outbox-status");
+        if (status) status.textContent = text;
+      },
+      showFallback: function (text) {
+        var outbox = ensureOutbox();
+        outbox.hidden = false;
+        var body = outbox.querySelector(".mcc-outbox-body");
+        var area = outbox.querySelector("textarea");
+        if (area) area.value = text;
+        if (body) body.hidden = false;
+        var copyButton = outbox.querySelector(".mcc-outbox-copy");
+        if (copyButton && copyButton.getAttribute("data-mcc-wired") !== "1") {
+          copyButton.setAttribute("data-mcc-wired", "1");
+          copyButton.addEventListener("click", function () {
+            var current = outbox.querySelector("textarea");
+            if (current) copyText(cfg, current.value, copyButton);
+          });
+        }
+        var closeButton = outbox.querySelector(".mcc-outbox-close");
+        if (closeButton && closeButton.getAttribute("data-mcc-wired") !== "1") {
+          closeButton.setAttribute("data-mcc-wired", "1");
+          closeButton.addEventListener("click", function () {
+            outbox.hidden = true;
+            if (body) body.hidden = true;
+          });
+        }
+      },
+    };
+  }
+
   function flash(button, label) {
     if (!button) return;
     var original = button.textContent;
@@ -172,22 +276,27 @@ export const CARD_RUNTIME_JS = `(function () {
   }
 
   // ---- Forms ----------------------------------------------------------
+  // Values are gathered per name rather than assigned, so a choice group and
+  // a free-text "Other" input can share one name and arrive as a single
+  // comma-joined answer. Empty values drop out, and every named control
+  // still yields a key, so an unanswered group renders as an empty token
+  // instead of leaving a literal "{{name}}" in the prompt.
   function serializeForm(form) {
-    var data = {};
+    var order = [];
+    var collected = {};
     var elements = form.querySelectorAll("input, select, textarea");
     for (var i = 0; i < elements.length; i++) {
       var el = elements[i];
       if (!el.name || el.disabled) continue;
-      if (el.type === "checkbox") {
-        if (el.checked) {
-          if (data[el.name]) data[el.name] += ", " + el.value; else data[el.name] = el.value;
-        }
-      } else if (el.type === "radio") {
-        if (el.checked) data[el.name] = el.value;
-      } else {
-        data[el.name] = el.value;
+      if (!Object.prototype.hasOwnProperty.call(collected, el.name)) {
+        collected[el.name] = [];
+        order.push(el.name);
       }
+      if ((el.type === "checkbox" || el.type === "radio") && !el.checked) continue;
+      if (el.value !== "") collected[el.name].push(el.value);
     }
+    var data = {};
+    for (var k = 0; k < order.length; k++) data[order[k]] = collected[order[k]].join(", ");
     return data;
   }
 
@@ -247,6 +356,97 @@ export const CARD_RUNTIME_JS = `(function () {
           });
         }
       })(forms[i]);
+    }
+  }
+
+  // ---- Prompt forge ---------------------------------------------------
+  // Roughly four characters to a token: close enough to tell a lean prompt
+  // from a bloated one, and cheap enough to recompute on every keystroke.
+  function estimateTokens(text) {
+    var trimmed = String(text == null ? "" : text).trim();
+    return trimmed.length === 0 ? 0 : Math.max(1, Math.ceil(trimmed.length / 4));
+  }
+
+  // Live character (and, where the markup asks for it, token) counters for
+  // any textarea marked data-mcc-counter.
+  function initCounters() {
+    var areas = document.querySelectorAll("[data-mcc-counter]");
+    for (var i = 0; i < areas.length; i++) {
+      (function (area) {
+        if (area.getAttribute("data-mcc-counted") === "1") return;
+        area.setAttribute("data-mcc-counted", "1");
+        var field = area.closest ? area.closest(".mcc-field") : null;
+        if (!field) field = area.parentNode;
+        var count = field ? field.querySelector(".mcc-count") : null;
+        if (!count) return;
+        var tokens = field.querySelector(".mcc-tokens");
+        var update = function () {
+          var text = area.value || "";
+          count.textContent = String(text.length);
+          if (tokens) tokens.textContent = String(estimateTokens(text));
+        };
+        area.addEventListener("input", update);
+        update();
+      })(areas[i]);
+    }
+  }
+
+  // The finished-prompt card sends nothing until the confirmation box has
+  // been answered, so a stray click cannot post a prompt to the chat.
+  function initPromptForge(cfg) {
+    var panels = document.querySelectorAll(".mcc-forge-final");
+    for (var i = 0; i < panels.length; i++) {
+      (function (panel) {
+        if (panel.getAttribute("data-mcc-wired") === "1") return;
+        panel.setAttribute("data-mcc-wired", "1");
+        var area = panel.querySelector(".mcc-forge-prompt");
+        if (!area) return;
+        var box = panel.querySelector(".mcc-confirm");
+        var status = panel.querySelector(".mcc-form-status");
+        function setStatus(text) { if (status) status.textContent = text; }
+        function closeBox() { if (box) box.hidden = true; }
+
+        var sendButton = panel.querySelector(".mcc-forge-send");
+        if (sendButton) {
+          sendButton.addEventListener("click", function () {
+            if (area.value.trim() === "") {
+              setStatus("Nothing to send: the prompt is empty.");
+              return;
+            }
+            setStatus("");
+            if (box) box.hidden = false;
+          });
+        }
+        var yes = panel.querySelector(".mcc-confirm-yes");
+        if (yes) {
+          yes.addEventListener("click", function () {
+            closeBox();
+            // The prompt is already on screen in the textarea, so an
+            // unconfirmed handoff points at the copy button rather than
+            // printing a second copy of the same text.
+            deliverPrompt(cfg, area.value.trim(), {
+              setStatus: setStatus,
+              showFallback: function () {
+                setStatus("The chat client did not confirm this. Use Copy prompt and send it yourself.");
+              },
+            });
+          });
+        }
+        var no = panel.querySelector(".mcc-confirm-no");
+        if (no) {
+          no.addEventListener("click", function () {
+            closeBox();
+            setStatus("Not sent. Edit the prompt, or copy it and send it yourself.");
+          });
+        }
+        var copyButton = panel.querySelector(".mcc-forge-copy");
+        if (copyButton) {
+          copyButton.addEventListener("click", function () {
+            copyText(cfg, area.value, copyButton);
+            setStatus("Copied. Paste it as your next message.");
+          });
+        }
+      })(panels[i]);
     }
   }
 
@@ -515,7 +715,7 @@ export const CARD_RUNTIME_JS = `(function () {
           try { selection = String(window.getSelection() || ""); } catch (err) { selection = ""; }
           var prompt = action.prompt;
           while (prompt.indexOf("{{selection}}") > -1) prompt = prompt.replace("{{selection}}", selection);
-          sendPrompt(cfg, prompt);
+          deliverPrompt(cfg, prompt, outboxSurface(cfg));
         });
       })(actions[i]);
     }
@@ -524,6 +724,13 @@ export const CARD_RUNTIME_JS = `(function () {
       sep.className = "mcc-menu-sep";
       menu.appendChild(sep);
     }
+    // Always offered, on every card: opens the three-step flow that turns a
+    // short gist into one token-efficient prompt. Label and bootstrap text
+    // are duplicated from cards/prompt-forge.ts, which cannot be imported
+    // here without a cycle through cards/shell.ts.
+    menuItem(menu, "Generate Efficient Verbose Prompt", function () {
+      deliverPrompt(cfg, "[efficient-prompt] Call create_prompt_gist_card with no arguments. Reply with nothing else.", outboxSurface(cfg));
+    });
     // Copies the standalone card HTML; the Insert Card bookmarklet can then
     // place it by hand on browser hosts.
     menuItem(menu, "Copy card", function (item) {
@@ -704,9 +911,45 @@ export const CARD_RUNTIME_JS = `(function () {
       var codeButton = target.closest(".mcc-copy-code");
       if (codeButton) {
         var wrap = codeButton.closest(".mcc-codewrap");
-        var pre = wrap ? wrap.querySelector("pre") : null;
+        // A file view puts an aria-hidden line-number gutter before the code,
+        // so the copy button asks for the code pre by name and hands back the
+        // file without its line numbers.
+        var pre = wrap ? wrap.querySelector("pre.mcc-code") || wrap.querySelector("pre") : null;
         if (pre) copyText(cfg, pre.textContent || "", codeButton);
       }
+    });
+
+    // File view toggle: Raw/Code on a source file, Raw/Rendered on markdown.
+    // Everything needed is already in the card, so switching never costs a
+    // round trip, and the choice survives tab switches because nothing is
+    // destroyed. A view with its own pane swaps panes; a view that is only a
+    // restyling of the same text (raw code) just moves data-mcc-view, which
+    // is what the stylesheet keys off.
+    document.addEventListener("click", function (event) {
+      var button = event.target.closest ? event.target.closest("[data-mcc-view-set]") : null;
+      if (!button) return;
+      var view = button.getAttribute("data-mcc-view-set");
+      var wrap = button.closest(".mcc-fileview");
+      if (!wrap) return;
+      wrap.setAttribute("data-mcc-view", view);
+      var buttons = wrap.querySelectorAll("[data-mcc-view-set]");
+      for (var b = 0; b < buttons.length; b++) {
+        var on = buttons[b].getAttribute("data-mcc-view-set") === view;
+        buttons[b].classList.toggle("mcc-active", on);
+        buttons[b].setAttribute("aria-pressed", on ? "true" : "false");
+      }
+      var panes = wrap.querySelectorAll("[data-mcc-pane]");
+      var wanted = null;
+      for (var p = 0; p < panes.length; p++) {
+        if (panes[p].getAttribute("data-mcc-pane") === view) wanted = panes[p];
+      }
+      // No pane of its own means this view is a restyling, not a document.
+      if (wanted) {
+        for (var q = 0; q < panes.length; q++) {
+          panes[q].hidden = panes[q] !== wanted;
+        }
+      }
+      post("notify", { message: cardTag(readConfig()) + ":file-view:" + view });
     });
 
     // External links open through the host.
@@ -723,6 +966,12 @@ export const CARD_RUNTIME_JS = `(function () {
     document.addEventListener("contextmenu", function (event) {
       var menu = document.getElementById("mcc-menu");
       if (!menu || menu.childElementCount === 0) return;
+      // Editable fields keep the native menu: a user pasting their gist needs
+      // the host clipboard items more than a card-level action list.
+      if (event.target.closest && event.target.closest("input, textarea, select, [contenteditable=\\"true\\"]")) {
+        menu.style.display = "none";
+        return;
+      }
       event.preventDefault();
       menu.style.display = "block";
       var x = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 6);
@@ -751,6 +1000,8 @@ export const CARD_RUNTIME_JS = `(function () {
     initVideo(cfg);
     initDrag(cfg);
     initForms(cfg);
+    initCounters();
+    initPromptForge(cfg);
     initTutor(cfg);
     buildContextMenu(cfg);
     post("notify", { message: cardTag(cfg) + ":ready" });

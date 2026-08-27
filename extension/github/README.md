@@ -20,6 +20,9 @@ to the conversation as the agent's next prompt.
 | `create_list_card` | Nested sequential outline numbered 1., 1.1., 1.1.1. |
 | `create_markdown_card` | Render a markdown document as one card: H1 becomes the title, H2 sections fold into reveals |
 | `create_video_card` | HTML video player for a short clip (direct file URL, `data:video/*`, or `blob:`) |
+| `create_prompt_gist_card` | Step 1 of the efficient-prompt flow: collect a 350-character gist |
+| `create_prompt_refine_card` | Step 2: multiple-choice questions that close the gaps (max 3 rounds) |
+| `create_efficient_prompt_card` | Step 3: the finished prompt, editable, copyable, sent on confirmation |
 | `update_card` | Re-render an existing card in place |
 | `remove_card` / `clear_cards` | Take cards off the deck |
 | `list_cards` | See the deck (the user may have reordered or removed cards) |
@@ -31,6 +34,12 @@ HTML source, a collapse toggle, drag to reorder cards in the deck, tutor terms t
 tooltips after a hover dwell, and model-defined right-click actions that send prompts back
 to the conversation (`{{selection}}` in an action prompt is replaced with the user's
 selected text). The deck has a light and a dark theme.
+
+The right-click menu also carries "Generate Efficient Verbose Prompt", on cards and on the
+empty deck alike. It opens the three-step flow that turns a short gist into one
+token-efficient prompt: the gist card is built by the extension itself, so opening the
+flow costs the conversation nothing and the agent is first involved when the gist is
+submitted.
 
 ## Example action inputs
 
@@ -64,6 +73,44 @@ selected text). The deck has a light and a dark theme.
 When the user submits the form, the filled template is handed to the agent as the next
 prompt. If the handoff fails, the card reveals the prompt text with a copy button, and the
 agent can always read submissions later with `get_form_responses`.
+
+`create_prompt_refine_card`:
+
+```json
+{
+  "questions": [
+    {
+      "name": "depth",
+      "question": "How much detail?",
+      "options": ["Overview", "Step by step", "Line by line"]
+    },
+    {
+      "name": "output",
+      "question": "What should come back?",
+      "options": ["A table", "A checklist", "Prose"],
+      "multiple": true
+    }
+  ]
+}
+```
+
+Each question also renders a free-text "Other" input under the group's own name, so a typed
+answer arrives joined with the checked ones. Anything left blank comes back empty, which the
+submitted prompt spells out as "no preference". The canvas counts the rounds itself and
+refuses a fourth, so the flow cannot drift into an open-ended interview.
+
+`create_efficient_prompt_card`:
+
+```json
+{
+  "prompt": "Audit config/loader.py for unhandled error paths. Output: a table of file, line, failure mode, and fix, then one line on the riskiest one.",
+  "notes": "Assumes the current logging setup stays."
+}
+```
+
+The card shows that prompt with its character and token count and a **Send this prompt**
+button. Clicking it opens a confirmation box; only "Yes, send it" hands the prompt to the
+agent, and what goes is whatever the textarea holds at that moment, edits included.
 
 ## Installation
 
