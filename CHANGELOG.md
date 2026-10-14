@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0-alpha] - 2026-08-27
+## [1.0.0-alpha.0.2.0] - 2026-08-27
 
 ### Fixed
 
@@ -103,7 +103,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   prompt card. That page has no channel to the conversation, so the clipboard is the whole
   story there and the card now says so.
 
-## [0.1.3-alpha] - 2026-08-18
+## [1.0.0-alpha.0.1.3] - 2026-08-18
 
 Follow-up to a third live review pass, which exercised every card tool against a running
 instance and found six defects in what the tools actually returned.
@@ -181,10 +181,10 @@ instance and found six defects in what the tools actually returned.
   while stripping scripts and `onerror`, and `{{token}}` surviving unsubstituted outside a
   form's `promptTemplate`, nesting included.
 
-## [0.1.2-alpha] - 2026-08-14
+## [1.0.0-alpha.0.1.2] - 2026-08-14
 
 Follow-up to a second live review pass (reviewed via Claude Desktop), which confirmed the
-0.1.1-alpha result-shape and size fixes in the running server and surfaced two new
+1.0.0-alpha.0.1.1 result-shape and size fixes in the running server and surfaced two new
 findings around local paths and file ordering, both fixed here.
 
 ### Fixed
@@ -227,7 +227,7 @@ findings around local paths and file ordering, both fixed here.
   and survived (card rendering is stateless per call); uncaught exceptions still exit
   after being named.
 
-## [0.1.1-alpha] - 2026-08-11
+## [1.0.0-alpha.0.1.1] - 2026-08-11
 
 ### Fixed
 
@@ -289,7 +289,7 @@ findings around local paths and file ordering, both fixed here.
 - `sanitizeHtml` keeps `data:image/*`, `data:video/*`, and `data:audio/*` sources;
   every other `data:` payload is still dropped.
 
-## [0.1.0-alpha] - 2026-08-10
+## [1.0.0-alpha.0.1.0] - 2026-08-10
 
 ### Added
 
@@ -331,7 +331,7 @@ findings around local paths and file ordering, both fixed here.
   context actions (separated by a divider). It copies the card's standalone HTML,
   mirroring the header button, and pairs with the Insert Card bookmarklet.
 
-## [0.0.0-alpha] - 2026-08-10
+## [1.0.0-alpha.0.0.0] - 2026-08-10
 
 ### Added
 
