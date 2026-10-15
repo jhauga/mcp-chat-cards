@@ -24,7 +24,9 @@ process.on("exit", (code) => {
 });
 
 async function main(): Promise<void> {
-  const server = createServer();
+  // Diagnostics ride on stderr next to the lifecycle lines above, so the
+  // host's per-server log shows whether it ever read the card template.
+  const server = createServer({ diagnostics: (line) => console.error(line) });
   server.server.onclose = () => {
     console.error("mcp-chat-cards transport closed by host");
   };

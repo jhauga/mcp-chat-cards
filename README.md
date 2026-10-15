@@ -96,8 +96,66 @@ adjusting the path to where you cloned the repository:
 }
 ```
 
-Restart the desktop client after saving. The same stdio command works in any MCP host;
-for hosts that support MCP UI resources, cards render as sandboxed iframes.
+Restart the desktop client after saving, or use **Developer > Reload MCP Configuration**
+(the Developer menu appears after Help > Troubleshooting > Enable Developer Mode). The
+same stdio command works in any MCP host; for hosts that support MCP UI resources, cards
+render as sandboxed iframes.
+
+Where the desktop client keeps its logs depends on how it was installed: the Microsoft
+Store build writes `mcp-server-chat-cards.log` under `%LOCALAPPDATA%\Claude\Logs\`, the
+classic installer under `%APPDATA%\Claude\logs\`. The server's own stderr lines land in
+that file, which is what [Debugging cards in Claude Desktop](#debugging-cards-in-claude-desktop)
+reads.
+
+> **Host status (October 2026).** Claude Desktop builds since September 2026 announce a
+> local stdio server's tools without their `ui` binding, so the host never classifies a
+> card tool as an App, never reads the template, and shows the result as text, in new and
+> old conversations alike. Nothing a server returns changes that; the upstream report is
+> [anthropics/claude-ai-mcp#1069](https://github.com/anthropics/claude-ai-mcp/issues/1069).
+> The server itself is unaffected (the debugging section shows how to tell), and hosts that
+> forward the binding render cards as before. [Run as a custom connector](#run-as-a-custom-connector-streamable-http)
+> is the route reported upstream as still rendering; it is not yet verified from this
+> repository.
+
+## Run as a custom connector (Streamable HTTP)
+
+`npm run start:http` starts the same server over Streamable HTTP so a chat client can
+reach it as a remote ("custom") connector. The client's cloud makes the connection, so the
+process has to be reachable from the internet, normally through a tunnel on the machine
+that runs it, and everything is gated by one bearer token.
+
+| Variable | Purpose |
+| --- | --- |
+| `MCP_CHAT_CARDS_HTTP_TOKEN` | Required. The server refuses to start without it and rejects every request that does not carry `Authorization: Bearer <token>` (16 characters minimum). |
+| `MCP_CHAT_CARDS_HTTP_PORT` | Port to listen on (default `3310`). |
+| `MCP_CHAT_CARDS_HTTP_HOST` | Address to bind (default `127.0.0.1`, loopback only). |
+| `MCP_CHAT_CARDS_FS_ROOT` | Strongly recommended here. The local file tools read the filesystem of the machine running the server, so confine them to one folder before exposing it. |
+
+The endpoint is `/mcp`; every other path answers 404. Each client session gets its own
+server instance (the session id travels in the `mcp-session-id` header, as the transport
+specifies), request bodies are capped at 4 MiB, and the SDK's DNS-rebinding check is off,
+because behind a tunnel the `Host` header is the tunnel's name and the token is the gate.
+
+A minimal setup, with `set` instead of `export` in a Windows command prompt:
+
+```bash
+export MCP_CHAT_CARDS_HTTP_TOKEN=<token>
+export MCP_CHAT_CARDS_FS_ROOT=/path/to/an/empty/folder
+npm run start:http
+cloudflared tunnel --url http://127.0.0.1:3310
+```
+
+Then add the tunnel's URL plus `/mcp` (for example `https://example.com/mcp`) in the
+client's connector settings, with authentication set to "No sign in" and one request
+header, `Authorization: Bearer <token>`. In Claude, custom connectors live under
+Settings > Connectors and have to be enabled in each conversation's tools menu; the Free
+plan allows one.
+
+**Status: experimental.** The entry point is covered by `test/http.test.ts`, has been
+exercised with the SDK's Streamable HTTP client and through a public tunnel, and is the
+route reported upstream as rendering Apps on current desktop builds, but a card has not
+yet been seen rendering in Claude through it from this repository. Nothing here is needed
+for the stdio setup above.
 
 ## Tools
 
@@ -259,9 +317,10 @@ template resource at `ui://mcp-chat-cards/card.html` with MIME type
 `text/html;profile=mcp-app`, and every card tool links to it through
 `_meta.ui.resourceUri` and declares an output schema (hosts drop `structuredContent`
 from schema-less tools, leaving the card nothing to paint). Hosts that support the Apps
-extension (recent Claude Desktop builds among them) render the template inline in the
-chat as a sandboxed iframe, complete the `ui/initialize` handshake, and deliver the tool
-result to it. The template is defensive about the parts that fail silently: it announces
+extension render the template inline in the chat as a sandboxed iframe, complete the
+`ui/initialize` handshake, and deliver the tool result to it (Claude Desktop did so until
+September 2026; see the host status note under
+[Use with Claude Desktop](#use-with-claude-desktop)). The template is defensive about the parts that fail silently: it announces
 `ui/notifications/initialized` on a timeout as well as on the handshake reply (the host
 withholds the tool result until it sees the announcement), locates the card payload by
 deep search rather than one fixed nesting, reports `ui/notifications/size-changed` after
@@ -297,7 +356,9 @@ Every card tool returns the same three things, whatever the card kind:
 
 ### Rendering surface
 
-Cards render inline in the Claude desktop app sidebar. Other surfaces (mobile and web)
+Cards render inline in the Claude desktop app sidebar on builds that mount the template
+(see the host status note under [Use with Claude Desktop](#use-with-claude-desktop)).
+Other surfaces (mobile and web)
 receive the text summary and the structured payload but do not paint the card, so each
 summary is written to stand alone and tools are instructed to state a card's conclusion in
 the conversation as well.
@@ -407,17 +468,44 @@ same goes for Windows paths sent to a POSIX server and for unexpanded `~/` paths
 
 ## Debugging cards in Claude Desktop
 
-If a card mounts but stays empty, the failure is usually silent, so the template traces
-everything to the console:
+A card that arrives as text, or mounts and stays empty, fails silently. Work down this
+list; each step separates the host from the server.
 
-1. Enable Developer Mode in Claude Desktop (Settings, Developer), then open the webview
-   developer tools for the conversation.
-2. Filter the console for `[mcp-chat-cards]`. Every JSON-RPC message the card sends and
-   receives is logged with its direction (`tx`/`rx`), so a missing handshake reply or an
-   undelivered tool result is visible immediately.
-3. Run `window.__mccDebug()` in that console for a snapshot: template version, whether
-   `initialized` was announced, whether a card painted, the rendered card HTML, and the
-   last 50 protocol messages. Paste its output when reporting a rendering issue.
+1. **Did the host mount anything?** Enable Developer Mode (Help > Troubleshooting > Enable
+   Developer Mode), press `Ctrl+Shift+I` (`Cmd+Option+I` on macOS), and inspect the tool
+   call. A rendered card is an iframe nested inside another iframe. No inner iframe means
+   the host never treated the tool as an App: continue with step 2. An inner iframe that
+   stays empty means the handshake or the payload failed: go to step 5.
+2. **Did the host read the template?** Open `mcp-server-chat-cards.log` (locations under
+   [Use with Claude Desktop](#use-with-claude-desktop)). The server writes one stderr line
+   per host interaction, all prefixed `mcp-chat-cards`:
+
+   ```text
+   mcp-chat-cards client <name> <version> connected (apps extension: declared)
+   mcp-chat-cards card table card-abc123-1 rendered (1658 chars, apps client: yes)
+   mcp-chat-cards template read by host (ui://mcp-chat-cards/card.html, 66232 chars)
+   ```
+
+   A `card ... rendered` line with no `template read by host` line near it is the
+   signature of the host-side regression: the host negotiated Apps, called the tool, and
+   never asked for the template. The host's own `resources/read` entries in the same file
+   are only a lower bound (it logs one of its connections and never logs `tools/call`), so
+   read the server's lines rather than the host's.
+3. **Is the server side healthy?** Run `npm run probe`. It spawns `dist/index.js` over real
+   stdio as a client that declares the Apps extension and checks the seven things a host
+   needs: the server's extension capability, the `ui` binding on every card tool, output
+   schemas, the template's MIME type and content, a card result's `structuredContent`, and
+   the absence of the standalone fallback for Apps clients. All seven passing means a
+   text-only card is the host's doing.
+4. **What does the model see?** Ask, in the same conversation, which chat-cards tools
+   advertise a `ui://` resource. The model answers from the tool list the host gave it;
+   "none" means the host dropped the binding before the model ever saw it.
+5. **Inside a mounted iframe**, filter its console for `[mcp-chat-cards]`: every JSON-RPC
+   message the card sends and receives is logged with its direction (`tx`/`rx`), so a
+   missing handshake reply or an undelivered tool result is visible immediately. Run
+   `window.__mccDebug()` there for a snapshot: template version, whether `initialized` was
+   announced, whether a card painted, the rendered card HTML, and the last 50 protocol
+   messages. Paste its output when reporting a rendering issue.
 
 ## Supplemental ports
 

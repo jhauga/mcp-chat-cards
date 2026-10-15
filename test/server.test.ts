@@ -183,6 +183,15 @@ describe("MCP Apps integration", () => {
     ]);
   });
 
+  it("declares the Apps extension in its own capabilities", () => {
+    const capabilities = client.getServerCapabilities() as
+      | { extensions?: Record<string, { mimeTypes?: string[] }> }
+      | undefined;
+    expect(capabilities?.extensions?.["io.modelcontextprotocol/ui"]?.mimeTypes).toEqual([
+      "text/html;profile=mcp-app",
+    ]);
+  });
+
   it("pre-declares the card template resource with the mcp-app mime type", async () => {
     const { resources } = await client.listResources();
     const template = resources.find((r) => r.uri === "ui://mcp-chat-cards/card.html");
@@ -326,6 +335,61 @@ describe("capability-aware results", () => {
     const structured = result.structuredContent as CardStructuredContent;
     expect(structured.card.articleHtml).toContain("mcc-card");
     await appsClient.close();
+  });
+});
+
+describe("diagnostics", () => {
+  it("reports the client, template reads, and rendered cards to the sink", async () => {
+    const lines: string[] = [];
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await createServer({ diagnostics: (line) => lines.push(line) }).connect(serverTransport);
+    const appsClient = new Client(
+      { name: "diag-client", version: "1.2.3" },
+      {
+        capabilities: {
+          extensions: {
+            "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
+          },
+        } as Record<string, unknown>,
+      },
+    );
+    await appsClient.connect(clientTransport);
+    await appsClient.readResource({ uri: "ui://mcp-chat-cards/card.html" });
+    const result = await appsClient.callTool({
+      name: "create_table_card",
+      arguments: { title: "Diag", headers: ["A"], rows: [["1"]] },
+    });
+    const id = (result.structuredContent as CardStructuredContent).card.config.id;
+    await appsClient.close();
+
+    expect(lines).toContain(
+      "mcp-chat-cards client diag-client 1.2.3 connected (apps extension: declared)",
+    );
+    expect(lines.some((line) => line.startsWith("mcp-chat-cards template read by host ("))).toBe(
+      true,
+    );
+    expect(
+      lines.some((line) => new RegExp(`^mcp-chat-cards card \\S+ ${id} rendered \\(`).test(line)),
+    ).toBe(true);
+    expect(lines.some((line) => line.endsWith("apps client: yes)"))).toBe(true);
+  });
+
+  it("names a client that did not declare the Apps extension", async () => {
+    const lines: string[] = [];
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await createServer({ diagnostics: (line) => lines.push(line) }).connect(serverTransport);
+    const plainClient = new Client({ name: "plain-client", version: "0.1.0" });
+    await plainClient.connect(clientTransport);
+    await plainClient.callTool({
+      name: "create_table_card",
+      arguments: { title: "Plain", headers: ["A"], rows: [["1"]] },
+    });
+    await plainClient.close();
+
+    expect(lines).toContain(
+      "mcp-chat-cards client plain-client 0.1.0 connected (apps extension: absent)",
+    );
+    expect(lines.some((line) => line.endsWith("apps client: no)"))).toBe(true);
   });
 });
 

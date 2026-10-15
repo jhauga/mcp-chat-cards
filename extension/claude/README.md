@@ -3,7 +3,9 @@
 A supplemental Claude artifact port of the [mcp-chat-cards](../../README.md) card kinds.
 Everything lives in one self-contained HTML page - no build step, no dependencies, no
 network requests. Claude fills the page's card spec block and publishes the result as an
-artifact; the same file also opens directly in a browser.
+artifact; the same file also opens directly in a browser. While Claude Desktop does not
+render Apps from local stdio servers (see the host status note in the main README), this
+port is the fallback that needs no tunnel: the same cards, published as an artifact.
 
 ## How Claude uses it
 

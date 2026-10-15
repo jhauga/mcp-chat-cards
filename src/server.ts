@@ -181,10 +181,34 @@ export function embedStandaloneHtml(): boolean {
   return value === "1" || value === "true" || value === "always";
 }
 
-export function createServer(): McpServer {
+// Extension identifier under which hosts and this server negotiate MCP Apps
+// support (SEP-1865). Hosts declare it in the initialize request; this server
+// declares it in the initialize result.
+export const APPS_EXTENSION_ID = "io.modelcontextprotocol/ui";
+
+export interface ServerOptions {
+  // Receives one plain line per noteworthy host interaction: client connected,
+  // template read, card rendered, standalone document read. The stdio entry
+  // point routes these to stderr, which a desktop host captures into its
+  // per-server log, so that log answers "did the host ever try to mount a
+  // card" without a debugger. Tests leave it unset and stay silent.
+  diagnostics?: (line: string) => void;
+}
+
+export function createServer(options: ServerOptions = {}): McpServer {
+  const diag = options.diagnostics ?? (() => undefined);
   const server = new McpServer(
     { name: "mcp-chat-cards", version: SERVER_VERSION },
-    { instructions: SERVER_INSTRUCTIONS },
+    {
+      // Announced in both directions. The spec only asks the host to declare
+      // the extension, but hosts have been seen to treat a server's tools as
+      // plain tools while the server stays silent, so the declaration costs
+      // nothing and removes one way to lose every card.
+      capabilities: {
+        extensions: { [APPS_EXTENSION_ID]: { mimeTypes: [MCP_APP_MIME_TYPE] } },
+      },
+      instructions: SERVER_INSTRUCTIONS,
+    },
   );
 
   // Standalone documents for recently rendered cards, readable at
@@ -208,7 +232,19 @@ export function createServer(): McpServer {
     const capabilities = server.server.getClientCapabilities() as
       | { extensions?: Record<string, unknown> }
       | undefined;
-    return Boolean(capabilities?.extensions?.["io.modelcontextprotocol/ui"]);
+    return Boolean(capabilities?.extensions?.[APPS_EXTENSION_ID]);
+  };
+
+  // Who connected, and whether they can paint cards. A host that declares the
+  // Apps extension here but never reads the template below is the signature
+  // of a host that dropped the tool binding on its way to the renderer.
+  server.server.oninitialized = () => {
+    const info = server.server.getClientVersion();
+    const client = info ? `${info.name} ${info.version}` : "unknown client";
+    diag(
+      `mcp-chat-cards client ${client} connected ` +
+        `(apps extension: ${clientSupportsApps() ? "declared" : "absent"})`,
+    );
   };
 
   const cardResult = (card: RenderedCard): CallToolResult => {
@@ -267,6 +303,10 @@ export function createServer(): McpServer {
     const limit = resultCharLimit();
     const size = JSON.stringify(result).length;
     if (size > limit) throw oversizedCardError(card.config.kind, size, limit);
+    diag(
+      `mcp-chat-cards card ${card.config.kind} ${card.id} rendered ` +
+        `(${size} chars, apps client: ${appsHost ? "yes" : "no"})`,
+    );
     return result;
   };
 
@@ -282,15 +322,12 @@ export function createServer(): McpServer {
       mimeType: MCP_APP_MIME_TYPE,
       _meta: { ui: { prefersBorder: true } },
     },
-    async () => ({
-      contents: [
-        {
-          uri: CARD_TEMPLATE_URI,
-          mimeType: MCP_APP_MIME_TYPE,
-          text: buildCardTemplateHtml(SERVER_VERSION),
-        },
-      ],
-    }),
+    async () => {
+      const text = buildCardTemplateHtml(SERVER_VERSION);
+      // The one host action that proves a mount was attempted.
+      diag(`mcp-chat-cards template read by host (${CARD_TEMPLATE_URI}, ${text.length} chars)`);
+      return { contents: [{ uri: CARD_TEMPLATE_URI, mimeType: MCP_APP_MIME_TYPE, text }] };
+    },
   );
 
   // Standalone HTML for a card the server rendered earlier. Hosts without
@@ -314,6 +351,7 @@ export function createServer(): McpServer {
           `No rendered card with id "${cardId}" is still available. Call the card tool again.`,
         );
       }
+      diag(`mcp-chat-cards standalone html read by host (${cardId}, ${html.length} chars)`);
       return { contents: [{ uri: uri.href, mimeType: "text/html", text: html }] };
     },
   );

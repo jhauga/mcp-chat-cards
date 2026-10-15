@@ -73,13 +73,27 @@ covers this: it launches the OS default application detached, so nothing blocks.
    outside a host still picks a palette. The dark palette exists
    (`:root[data-theme="dark"]` in `src/cards/theme.ts`) but only a host stamping
    `data-theme` currently reaches it.
-- [ ] HTTP/SSE transport alongside stdio, for remote hosting.
-- [ ] Reach the Claude browser app (`claude.ai`) as a remote connector. Blocked on the
-   transport item above: the browser app connects to remote MCP servers over HTTP and
-   cannot launch a local stdio process.
-   Done when: transport exists, and `README.md` carries setup instructions for adding the
-   deployed server as a connector, in the same shape as the existing Claude Desktop
-   section.
+- [x] HTTP/SSE transport alongside stdio, for remote hosting. Streamable HTTP entry point
+   in `src/http.ts` (`npm run start:http`): bearer-token gated, loopback bind, one server
+   instance per session, covered by `test/http.test.ts`. No separate SSE transport: the
+   SDK's Streamable HTTP transport serves the SSE streams itself.
+- [ ] Reach the Claude browser app (`claude.ai`) as a remote connector. The transport
+   exists and `README.md` carries the connector setup; what remains is verification. A card
+   rendering in Claude through a connector has not yet been observed from this repository
+   (October 2026: untested, not failed). It is also the only route reported upstream as
+   rendering Apps on current desktop builds, where local stdio servers lose their `ui`
+   binding (anthropics/claude-ai-mcp#1069).
+   Done when: a card renders in Claude via the connector and the README's "experimental"
+   label comes off.
+- [ ] Tell the model never to assert that a card is visible. On a host that shows only the
+   text result, the model still writes "the card is up" because the tool said the card
+   renders inline; `SERVER_INSTRUCTIONS` in `src/server.ts` should ask for "the card was
+   produced" plus its conclusion, which stays true on every surface.
+- [ ] Harden the HTTP entry point for daily use once a card is seen rendering through it:
+   an opt-in variable for the local file tools over HTTP (off by default, since a tunnel
+   exposes the server to the internet), a bounded card cache shared across sessions so
+   `ui://mcp-chat-cards/html/<id>` reads work from any session, and graceful shutdown
+   that closes every session. Deferred rather than built blind.
 - [ ] Server-side setting that strengthens how hard the tools advertise themselves, so a
    user can opt into cards being used across all conversations rather than when the model
    judges them useful. Read from an environment variable and adjust
