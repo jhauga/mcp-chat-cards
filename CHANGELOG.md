@@ -7,6 +7,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-alpha.1.0.1] - 2026-10-15
+
+### Fixed
+
+- The visualizer widget runtime could hang the chat, and with it Claude Desktop. Its
+  dark-mode sync re-ran whenever the host frame's `:root` style or class changed and
+  inserted a probe element each time; a host that sizes the frame by watching its DOM,
+  and touches `:root` as it does, answered every probe with another change, so the two
+  chased each other on microtasks until the frame stopped responding. Cards that loaded
+  the 1.0.0-alpha.1.0.0 bundle could fail to appear, and pressing a form's submit button
+  could freeze the app. The sync now only reads, writes a single attribute of its own
+  (`data-mcc-dark`, never the host's `data-theme`) and only when the answer changes,
+  watches nothing but the host's mode attributes, and runs on a throttled timer.
+- Forms in a widget can no longer navigate the host frame. Every form in `widget_code`
+  carries `method="dialog"`, which is inert outside a dialog, and the bundle cancels any
+  native submit in the capture phase; before, a form whose script had not loaded
+  replaced the card with a blank page on submit.
+- Form submissions and context actions reach a host whose `sendPrompt` and `openLink`
+  are top-level `const` bindings rather than `window` properties. The bridge looked only
+  at `window`, so on such a host prompts were dropped while the card reported them sent.
+
 ## [1.0.0-alpha.1.0.0] - 2026-10-15
 
 ### Fixed

@@ -47,7 +47,7 @@ import { withInteroperableToolSchemas } from "./util/schema-dialect.js";
 // Keep in step with package.json. This is the version the server announces
 // and the card template's __mccDebug() reports, so it is also how a live
 // review tells a current deployment from a stale one.
-export const SERVER_VERSION = "1.0.0-alpha.1.0.0";
+export const SERVER_VERSION = "1.0.0-alpha.1.0.1";
 
 const SERVER_INSTRUCTIONS = `mcp-chat-cards renders interactive HTML cards inside the chat.
 Use these tools whenever the conversation involves research, education, professional or

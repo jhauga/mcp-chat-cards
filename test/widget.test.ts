@@ -14,12 +14,14 @@ import {
   articleTitle,
   buildWidgetBundle,
   buildWidgetCode,
+  inertForms,
   WIDGET_BUNDLE_PATH,
   widgetBundleUrl,
   widgetTitle,
 } from "../src/cards/widget.js";
 import { buildTabCard } from "../src/cards/tabs.js";
 import { buildTableCard } from "../src/cards/table.js";
+import { buildFormCard } from "../src/cards/form.js";
 import { createServer, SERVER_VERSION, WIDGET_ACTION } from "../src/server.js";
 import { resultCharLimit } from "../src/util/budget.js";
 
@@ -100,6 +102,18 @@ describe("widget code", () => {
     expect(code).not.toMatch(/<!DOCTYPE|<html[\s>]|<head[\s>]|<body[\s>]/i);
   });
 
+  it("makes every form inert to native submission", () => {
+    const card = buildFormCard({
+      title: "Prefs",
+      fields: [{ name: "topic", label: "Topic" }],
+    });
+    const code = buildWidgetCode({ articleHtml: card.articleHtml, config: card.config, bundleUrl: "https://x.invalid/b.js" });
+    expect(card.articleHtml).toMatch(/<form class="mcc-form"/);
+    expect(code).toMatch(/<form method="dialog" class="mcc-form"/);
+    expect(inertForms('<form method="post" a="1">')).toBe('<form method="post" a="1">');
+    expect(inertForms("<formula><form>")).toBe('<formula><form method="dialog">');
+  });
+
   it("derives a snake_case title from the card heading and kind", () => {
     const card = buildTableCard({ title: "Rust iterator adapters — run 3", headers: ["x"], rows: [["1"]] });
     expect(articleTitle(card.articleHtml)).toBe("Rust iterator adapters — run 3");
@@ -111,7 +125,21 @@ describe("widget code", () => {
 // A page shaped like the visualizer's frame: host tokens on :root, sendPrompt
 // and openLink as globals, widget_code as the content, and the bundle inlined
 // where the CDN script tag would load it.
-function mountWidget(widgetCode: string, hostCss = ":root{--text-primary:#141413;--surface-1:#f5f4ee;--surface-2:#ffffff;--border:rgba(0,0,0,.12)}") {
+interface HostOptions {
+  // Define sendPrompt/openLink as top-level const bindings (not window
+  // properties), the way a host script may.
+  lexicalGlobals?: boolean;
+  // A host that watches the frame's DOM to size it and touches :root each
+  // time - the shape that turned 1.0.0-alpha.1.0.0's theme sync into an
+  // endless loop. Capped so a regression fails instead of hanging the run.
+  touchRootOnMutation?: boolean;
+}
+
+function mountWidget(
+  widgetCode: string,
+  hostCss = ":root{--text-primary:#141413;--surface-1:#f5f4ee;--surface-2:#ffffff;--border:rgba(0,0,0,.12)}",
+  host: HostOptions = {},
+) {
   const bundle = buildWidgetBundle("0.0.0-test");
   const html = widgetCode.replace(
     /<script src="[^"]*"><\/script>/,
@@ -119,18 +147,33 @@ function mountWidget(widgetCode: string, hostCss = ":root{--text-primary:#141413
   );
   const dom = new JSDOM(
     `<!DOCTYPE html><html><head><style>${hostCss}</style>` +
-      "<script>window.__prompts=[];window.__links=[];" +
-      "window.sendPrompt=function(t){window.__prompts.push(t)};" +
-      "window.openLink=function(u){window.__links.push(u)};</script>" +
-      `</head><body>${html}</body></html>`,
+      "<script>window.__prompts=[];window.__links=[];window.__hostTicks=0;" +
+      (host.lexicalGlobals
+        ? "const sendPrompt=function(t){window.__prompts.push(t)};" +
+          "const openLink=function(u){window.__links.push(u)};"
+        : "window.sendPrompt=function(t){window.__prompts.push(t)};" +
+          "window.openLink=function(u){window.__links.push(u)};") +
+      "</script></head><body>" +
+      (host.touchRootOnMutation
+        ? "<script>new MutationObserver(function(){ if (window.__hostTicks++ > 500) return;" +
+          "document.documentElement.style.setProperty('--host-tick', String(window.__hostTicks));" +
+          "document.documentElement.className = 'host-' + (window.__hostTicks % 2); })" +
+          ".observe(document.body, { subtree: true, childList: true, attributes: true });</script>"
+        : "") +
+      `${html}</body></html>`,
     { runScripts: "dangerously", url: "https://widget.invalid/", pretendToBeVisual: true },
   );
-  const win = dom.window as unknown as Window & { __prompts: string[]; __links: string[] };
+  const win = dom.window as unknown as Window & {
+    __prompts: string[];
+    __links: string[];
+    __hostTicks: number;
+  };
   return {
     window: dom.window,
     doc: dom.window.document,
     prompts: () => win.__prompts.slice(),
     links: () => win.__links.slice(),
+    hostTicks: () => win.__hostTicks,
     tick: (ms = 30) => new Promise<void>((resolve) => dom.window.setTimeout(resolve, ms)),
   };
 }
@@ -153,7 +196,9 @@ describe("widget bundle in a visualizer-like page", () => {
     expect(doc.getElementById("mcc-theme")?.textContent).toContain(".mcc-card");
     expect(doc.getElementById("mcc-critical")).toBeNull();
     expect(doc.documentElement.getAttribute("data-mcc-host")).toBe("widget");
+    // The bundle never writes the host's own theme attribute.
     expect(doc.documentElement.getAttribute("data-theme")).toBeNull();
+    expect(doc.documentElement.getAttribute("data-mcc-dark")).toBeNull();
   });
 
   it("runs the card runtime: tabs switch", () => {
@@ -182,9 +227,44 @@ describe("widget bundle in a visualizer-like page", () => {
     );
   });
 
-  it("follows a dark host", () => {
+  it("follows a dark host with its own attribute", () => {
     const { doc } = mountWidget(tabWidget(), ":root{--text-primary:#f0efea;--surface-2:#262624}");
-    expect(doc.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(doc.documentElement.getAttribute("data-mcc-dark")).toBe("1");
+    expect(doc.documentElement.getAttribute("data-theme")).toBeNull();
+    expect(doc.getElementById("mcc-theme")?.textContent).toContain(
+      ':root[data-mcc-host="widget"][data-mcc-dark="1"] {',
+    );
+  });
+
+  it("does not chase a host that touches :root whenever the frame changes", async () => {
+    const { doc, window, tick, hostTicks } = mountWidget(tabWidget(), undefined, {
+      touchRootOnMutation: true,
+    });
+    await tick(400);
+    const settled = hostTicks();
+    await tick(400);
+    // A feedback loop keeps the host observer firing until its cap; a quiet
+    // frame stops after the bundle's own setup.
+    expect(settled).toBeLessThan(50);
+    expect(hostTicks()).toBe(settled);
+    const tabs = Array.from(doc.querySelectorAll<HTMLElement>('[role="tab"]'));
+    tabs[1].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await tick(400);
+    expect(hostTicks() - settled).toBeLessThan(20);
+  });
+
+  it("reaches a host whose sendPrompt is a lexical global, not a window property", async () => {
+    const { doc, window, prompts, tick } = mountWidget(tabWidget(), undefined, {
+      lexicalGlobals: true,
+    });
+    doc.querySelector(".mcc-body")!.dispatchEvent(
+      new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+    );
+    Array.from(doc.querySelectorAll<HTMLElement>("#mcc-menu button"))
+      .find((button) => button.textContent === "Explain laziness")!
+      .click();
+    await tick(60);
+    expect(prompts()).toEqual(["Explain why iterators are lazy."]);
   });
 
   it("rebuilds a missing config so the card is still interactive", () => {

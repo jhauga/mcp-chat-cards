@@ -38,11 +38,18 @@ export function widgetBundleUrl(version: string): string {
 
 // Card variables re-pointed at the visualizer's design tokens, so a card
 // matches the conversation around it in light and dark mode. The accent
-// palette stays the card's own; data-theme="dark" (set by the bundle when the
-// host is dark) switches it. Fallbacks are the card theme's light values, for
+// palette stays the card's own; data-mcc-dark="1" (set by the bundle when the
+// host is dark) switches it. The host-token block comes second at equal
+// specificity, so surfaces and text follow the host in both modes. Fallbacks are the card theme's light values, for
 // a host that defines none of the tokens.
+// The card's dark accent palette, re-keyed to the bundle's own attribute so
+// the bundle never writes the host's data-theme.
+const DARK_BLOCK = /:root\[data-theme="dark"\]\s*\{([^}]*)\}/.exec(CARD_THEME_CSS)?.[1] ?? "";
+
 const WIDGET_HOST_CSS = `
-:root[data-mcc-host="widget"] {
+:root[data-mcc-host="widget"][data-mcc-dark="1"] {${DARK_BLOCK}}
+:root[data-mcc-host="widget"],
+:root[data-mcc-host="widget"][data-mcc-dark="1"] {
   --mcc-surface: var(--surface-2, #ffffff);
   --mcc-text: var(--text-primary, #1f2328);
   --mcc-muted: var(--text-secondary, #5b6b7b);
@@ -96,23 +103,43 @@ function widgetPrelude(version: string): string {
   var critical = document.getElementById("mcc-critical");
   if (critical && critical.parentNode) critical.parentNode.removeChild(critical);
 
-  // The visualizer exposes sendPrompt(text) and openLink(url) as globals.
-  // A prompt resolves true once handed over, so the runtime reports it as
-  // sent; false makes the runtime offer the prompt for the user to copy.
+  // Native form submission must never happen in the host frame: a form
+  // without an action navigates the frame (in a srcdoc frame, toward the
+  // host page itself). The card runtime cancels its own submits; this
+  // capture-phase guard covers any form it did not wire. widget_code also
+  // marks every form method="dialog", which is inert outside a dialog, for
+  // the case where this bundle never loads at all.
+  try {
+    document.addEventListener("submit", function (event) { event.preventDefault(); }, true);
+  } catch (err) { /* optional */ }
+
+  // The visualizer exposes sendPrompt(text) and openLink(url) as globals,
+  // which may be lexical bindings rather than window properties, so they are
+  // looked up by bare name first. A prompt resolves true once handed over, so
+  // the runtime reports it as sent; false makes it offer the prompt to copy.
+  function hostFunction(name) {
+    try {
+      if (name === "sendPrompt" && typeof sendPrompt === "function") return sendPrompt;
+      if (name === "openLink" && typeof openLink === "function") return openLink;
+    } catch (err) { /* not defined */ }
+    return typeof window[name] === "function" ? window[name] : null;
+  }
   window.__mccHostBridge = {
     post: function (type, payload) {
       payload = payload || {};
       if (type === "prompt") {
-        if (typeof window.sendPrompt !== "function") return Promise.resolve(false);
+        var send = hostFunction("sendPrompt");
+        if (!send) return Promise.resolve(false);
         try {
-          window.sendPrompt(String(payload.prompt || ""));
+          send(String(payload.prompt || ""));
           return Promise.resolve(true);
         } catch (err) { return Promise.resolve(false); }
       }
       if (type === "link") {
         var url = String(payload.url || "");
         try {
-          if (typeof window.openLink === "function") window.openLink(url);
+          var open = hostFunction("openLink");
+          if (open) open(url);
           else window.open(url, "_blank", "noopener");
           return Promise.resolve(true);
         } catch (err) { return Promise.resolve(false); }
@@ -123,9 +150,16 @@ function widgetPrelude(version: string): string {
     }
   };
 
-  // Light or dark, read from what the host actually paints: the computed
-  // color of its primary text token. Falls back to data-mode, then to the
-  // media query, for a host that defines no token.
+  // Light or dark, read from what the host paints: the computed text color
+  // of the body (the theme maps it to the host's --text-primary), then the
+  // raw token, then the media query for a host that defines no token.
+  //
+  // This must never feed back into the host. Hosts watch the frame's DOM to
+  // size it and may touch :root as they do; a sync that mutates the DOM and
+  // re-runs on :root style or class changes chases that host forever and
+  // hangs the frame (1.0.0-alpha.1.0.0 did exactly that). So the sync reads
+  // only, writes one attribute of its own and only when the answer changes,
+  // and runs on a throttled timer, never on a microtask.
   function luminance(color) {
     var value = String(color || "").trim();
     var m = /rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)/i.exec(value);
@@ -139,39 +173,43 @@ function widgetPrelude(version: string): string {
     return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
   }
   function hostIsDark() {
-    var mode = root.getAttribute("data-mode");
+    var mode = root.getAttribute("data-mode") || root.getAttribute("data-theme");
     if (mode === "dark") return true;
     if (mode === "light") return false;
     var token = getComputedStyle(root).getPropertyValue("--text-primary").trim();
     if (token) {
-      // A probe resolves any color syntax the host uses to rgb(); the raw
-      // token is the fallback for an engine that does not resolve var().
-      var probe = document.createElement("span");
-      probe.style.cssText = "position:absolute;visibility:hidden;color:var(--text-primary)";
-      (document.body || root).appendChild(probe);
-      var lum = luminance(getComputedStyle(probe).color);
-      probe.parentNode.removeChild(probe);
+      var lum = luminance(getComputedStyle(document.body || root).color);
       if (lum === null) lum = luminance(token);
       if (lum !== null) return lum > 0.5;
     }
     return Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
   }
+  var darkState = null;
   function syncTheme() {
     try {
-      if (hostIsDark()) root.setAttribute("data-theme", "dark");
-      else root.removeAttribute("data-theme");
+      var dark = hostIsDark();
+      if (dark === darkState) return;
+      darkState = dark;
+      if (dark) root.setAttribute("data-mcc-dark", "1");
+      else root.removeAttribute("data-mcc-dark");
     } catch (err) { /* theme sync is cosmetic */ }
+  }
+  var syncPending = false;
+  function scheduleSync() {
+    if (syncPending) return;
+    syncPending = true;
+    setTimeout(function () { syncPending = false; syncTheme(); }, 100);
   }
   syncTheme();
   try {
-    new MutationObserver(syncTheme).observe(root, {
+    new MutationObserver(scheduleSync).observe(root, {
       attributes: true,
-      attributeFilter: ["data-mode", "class", "style"]
+      attributeFilter: ["data-mode", "data-theme"]
     });
   } catch (err) { /* optional */ }
   try {
     var media = window.matchMedia("(prefers-color-scheme: dark)");
-    if (media.addEventListener) media.addEventListener("change", syncTheme);
+    if (media.addEventListener) media.addEventListener("change", scheduleSync);
   } catch (err) { /* optional */ }
 
   // The runtime initializes itself when #mcc-config exists. widget_code
@@ -256,10 +294,18 @@ export function buildWidgetCode(options: WidgetCodeOptions): string {
   return (
     `<style id="mcc-critical">${WIDGET_CRITICAL_CSS}</style>\n` +
     `<h2 class="sr-only">${title} (${kind} card)</h2>\n` +
-    `${options.articleHtml}\n` +
+    `${inertForms(options.articleHtml)}\n` +
     `<script type="application/json" id="mcc-config">${configToJson(options.config)}</script>\n` +
     `<script src="${bundle}"></script>`
   );
+}
+
+// Every form in a widget gets method="dialog": submitting it outside a
+// dialog does nothing, so a form the runtime never wired (the bundle failed
+// to load) cannot navigate the host frame. The runtime still sees the submit
+// event and cancels it as usual.
+export function inertForms(html: string): string {
+  return html.replace(/<form(?![^>]*\smethod=)(?=[\s>])/gi, '<form method="dialog"');
 }
 
 // One loading line per card; the model may write its own.

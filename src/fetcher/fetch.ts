@@ -35,7 +35,7 @@ export interface FetchResult {
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_REDIRECTS = 3;
-const USER_AGENT = "mcp-chat-cards/1.0.0-alpha.1.0.0 (+https://github.com/jhauga/mcp-chat-cards)";
+const USER_AGENT = "mcp-chat-cards/1.0.0-alpha.1.0.1 (+https://github.com/jhauga/mcp-chat-cards)";
 
 export function isPrivateIp(ip: string): boolean {
   if (net.isIPv4(ip)) {

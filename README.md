@@ -590,8 +590,17 @@ npm run dev        # compile in watch mode
 
 `widget/mcc-widget.js` is committed because jsDelivr serves it from the tagged
 repository; a test fails when it drifts from the sources. Cards point at
-`@v<package version>`, so push the release tag along with the commit, or widget-delivered
-cards fall back to their critical style until it exists.
+`@v<package version>`, so push the release tag along with the commit
+(`git push origin main v<version>`), or widget-delivered cards fall back to their critical
+style until it exists. Do not load the bundle URL before the tag is on GitHub: jsDelivr
+caches the miss. If that happened, opening
+`https://purge.jsdelivr.net/gh/jhauga/mcp-chat-cards@v<version>/widget/mcc-widget.js`
+clears it.
+
+The bundle runs inside the host's frame, so it must never feed back into the host: no
+observers on `:root` style or class, no DOM writes on a host-triggered path, no
+microtask loops. `test/widget.test.ts` mounts it beside a host that touches `:root` on
+every DOM change and fails if the two keep triggering each other.
 
 ## License
 
