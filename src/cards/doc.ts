@@ -27,6 +27,8 @@ export interface MarkdownCardOptions {
   openFirst?: boolean;
   // Which part of a multi-part document to render (1-based, default 1).
   part?: number;
+  // Article-HTML characters per part; defaults to cardSizeBudget().
+  budget?: number;
   tutorTerms?: TutorTerm[];
   contextActions?: ContextAction[];
 }
@@ -40,7 +42,7 @@ export function buildMarkdownCard(options: MarkdownCardOptions): RenderedCard {
   const parts = packByBudget(
     doc.sections,
     (section: MarkdownSection) => section.html.length + SECTION_OVERHEAD,
-    cardSizeBudget(),
+    options.budget ?? cardSizeBudget(),
   );
   const totalParts = Math.max(1, parts.length);
   const part = options.part ?? 1;

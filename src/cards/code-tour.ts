@@ -32,6 +32,8 @@ export interface CodeTourCardOptions {
   maxTabs?: number;
   // Which part of a multi-part tour to render (1-based, default 1).
   part?: number;
+  // Rendered characters per part; defaults to cardSizeBudget().
+  budget?: number;
   tutorTerms?: TutorTerm[];
   tutorTermsInCode?: boolean;
   contextActions?: ContextAction[];
@@ -140,7 +142,7 @@ export function buildCodeTourCard(options: CodeTourCardOptions): RenderedCard {
   }
   const parts = planTourParts(
     options.files,
-    cardSizeBudget(),
+    options.budget ?? cardSizeBudget(),
     options.maxTabs ?? DEFAULT_MAX_TABS,
   );
   const totalParts = parts.length;

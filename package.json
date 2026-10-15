@@ -1,6 +1,6 @@
 {
   "name": "mcp-chat-cards",
-  "version": "1.0.0-alpha.0.2.0",
+  "version": "1.0.0-alpha.1.0.0",
   "description": "MCP server that renders interactive HTML cards (tabs, tables, forms, charts, video, show/hide, sequential lists) inside desktop chat clients.",
   "license": "MIT",
   "author": "John Hauagabook",
@@ -11,6 +11,7 @@
   },
   "files": [
     "dist",
+    "widget",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -19,7 +20,7 @@
     "node": ">=18.17"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-widget.mjs",
     "dev": "tsc -p tsconfig.json --watch",
     "start": "node dist/index.js",
     "start:http": "node dist/http.js",

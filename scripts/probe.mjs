@@ -66,6 +66,23 @@ try {
   const noSchema = cardTools.filter((t) => !t.outputSchema).map((t) => t.name);
   check("every card tool declares an output schema", noSchema.length === 0, noSchema.join(", "));
 
+  // Before any template read this client looks exactly like Claude's device
+  // bridge: Apps declared, no view ever mounted. In the default auto render
+  // mode the card must also ship as a ready-made visualizer widget.
+  const early = await client.callTool({
+    name: "create_table_card",
+    arguments: { title: "Probe widget", headers: ["A"], rows: [["1"]] },
+  });
+  const display = early.structuredContent?.display;
+  const mode = (process.env.MCP_CHAT_CARDS_RENDER ?? "auto").trim().toLowerCase() || "auto";
+  check(
+    "before a template read, the card also ships as a visualizer widget (auto mode)",
+    mode === "apps" ? display === undefined : typeof display?.widget_code === "string",
+    display
+      ? `${display.title}, bundle ${/<script src="([^"]+)"/.exec(display.widget_code)?.[1] ?? "?"}`
+      : `render mode ${mode}, no display block`,
+  );
+
   const { resources } = await client.listResources();
   const template = resources.find((r) => r.uri === TEMPLATE_URI);
   check(
@@ -95,6 +112,11 @@ try {
     card
       ? `${card.config.kind} ${card.config.id}, ${JSON.stringify(result).length} chars`
       : JSON.stringify(result.content?.[0] ?? null),
+  );
+  check(
+    "after the host reads the template, no widget ships (auto mode)",
+    mode === "widget" ? true : result.structuredContent?.display === undefined,
+    result.structuredContent?.display ? "display present" : "apps only",
   );
   check(
     "an Apps client gets no standalone-html fallback in content",

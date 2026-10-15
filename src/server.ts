@@ -30,13 +30,24 @@ import { safeFetch, FetchError } from "./fetcher/fetch.js";
 import { extractPage } from "./fetcher/extract.js";
 import { readLocalTextFile } from "./util/files.js";
 import { readArchive } from "./util/archive.js";
-import { oversizedCardError, resultCharLimit, SINGLE_PART } from "./util/budget.js";
+import {
+  cardSizeBudget,
+  oversizedCardError,
+  resultCharLimit,
+  SINGLE_PART,
+} from "./util/budget.js";
+import {
+  buildWidgetCode,
+  widgetBundleUrl,
+  widgetLoadingMessages,
+  widgetTitle,
+} from "./cards/widget.js";
 import { withInteroperableToolSchemas } from "./util/schema-dialect.js";
 
 // Keep in step with package.json. This is the version the server announces
 // and the card template's __mccDebug() reports, so it is also how a live
 // review tells a current deployment from a stale one.
-export const SERVER_VERSION = "1.0.0-alpha.0.2.0";
+export const SERVER_VERSION = "1.0.0-alpha.1.0.0";
 
 const SERVER_INSTRUCTIONS = `mcp-chat-cards renders interactive HTML cards inside the chat.
 Use these tools whenever the conversation involves research, education, professional or
@@ -56,6 +67,13 @@ support also get a link to ui://mcp-chat-cards/html/<card-id>; read that resourc
 same card as a standalone HTML document. The document is NOT inlined in the result,
 because its theme and runtime are identical in every card and repeating them crowds out
 the conversation.
+
+Hosts that call these tools but never mount the Apps template (Claude's device bridge,
+which carries local servers into Claude app chats, is one) also get
+structuredContent.display: a ready-made widget for the visualizer tool show_widget. When
+display is present the user cannot see the card until you call show_widget with
+display.title, display.loading_messages, and display.widget_code unchanged; do not say the
+card is visible before that call succeeds.
 
 Rendering surface: cards render inline in the Claude desktop sidebar. Other surfaces
 (mobile and web) show the text summary instead, so keep each summary meaningful on its
@@ -158,6 +176,19 @@ const CARD_OUTPUT_SCHEMA = {
         "can report more. Read hasMore rather than the card title to decide whether content " +
         "was withheld.",
     ),
+  display: z
+    .object({
+      shown: z.boolean().describe("False: the user cannot see this card until action is taken"),
+      action: z.string().describe("What the caller must do to put the card in front of the user"),
+      title: z.string().describe("show_widget title (snake_case)"),
+      loading_messages: z.array(z.string()).describe("show_widget loading_messages"),
+      widget_code: z.string().describe("show_widget widget_code, passed unchanged"),
+    })
+    .optional()
+    .describe(
+      "Present only when the host is not mounting this server's MCP Apps template (see " +
+        "MCP_CHAT_CARDS_RENDER): the card ships as a ready-made visualizer widget instead.",
+    ),
 };
 
 function errorResult(error: unknown): CallToolResult {
@@ -185,6 +216,34 @@ export function embedStandaloneHtml(): boolean {
 // support (SEP-1865). Hosts declare it in the initialize request; this server
 // declares it in the initialize result.
 export const APPS_EXTENSION_ID = "io.modelcontextprotocol/ui";
+
+// How a card reaches the user on a host that negotiated MCP Apps.
+// - apps:   structuredContent for the Apps template only (the 0.2 behavior).
+// - widget: also a ready-made visualizer widget in structuredContent.display,
+//           for hosts that never mount Apps views but give the model an
+//           inline HTML renderer (show_widget) of its own.
+// - auto:   widget until the host reads the card template on this
+//           connection - the one act that proves it mounts Apps views - then
+//           apps. This is the default because Claude's device bridge, which
+//           carries local servers into Claude app chats, declares the Apps
+//           extension yet strips ui.resourceUri and never mounts a card.
+export type RenderMode = "auto" | "apps" | "widget";
+
+export function renderMode(): RenderMode {
+  const value = (process.env.MCP_CHAT_CARDS_RENDER ?? "").trim().toLowerCase();
+  return value === "apps" || value === "widget" ? value : "auto";
+}
+
+// Shown to the model in structuredContent.display, which is the part of a
+// result the device bridge passes on (it drops the text content).
+export const WIDGET_ACTION =
+  "This host does not mount MCP Apps views for this server, so the user cannot see this " +
+  "card yet. Show it now: call the visualizer tool show_widget (load it with tool search if " +
+  "it is deferred) with this object's title, loading_messages, and widget_code, passing " +
+  "widget_code exactly as given - it is already a complete widget. Only tell the user the " +
+  "card is visible after show_widget succeeds, and do not repeat the card's content in prose. " +
+  "If no show_widget tool is available, say cards cannot display in this chat and give the " +
+  "content in prose instead.";
 
 export interface ServerOptions {
   // Receives one plain line per noteworthy host interaction: client connected,
@@ -217,6 +276,10 @@ export function createServer(options: ServerOptions = {}): McpServer {
   const RECENT_CARD_LIMIT = 24;
   const recentCards = new Map<string, string>();
 
+  // Set once the host reads the card template on this connection. Hosts read
+  // it to mount an Apps view, so it is the evidence auto mode waits for.
+  let templateReadByHost = false;
+
   const rememberCard = (card: RenderedCard): void => {
     recentCards.set(card.id, card.html);
     for (const id of recentCards.keys()) {
@@ -234,6 +297,22 @@ export function createServer(options: ServerOptions = {}): McpServer {
       | undefined;
     return Boolean(capabilities?.extensions?.[APPS_EXTENSION_ID]);
   };
+
+  // Whether this result also ships as a visualizer widget (see RenderMode).
+  // Only hosts that negotiated Apps are candidates: a host that did not gets
+  // the standalone-document link, and has no Apps view to be missing.
+  const deliverAsWidget = (): boolean => {
+    const mode = renderMode();
+    if (mode === "widget") return true;
+    if (mode === "apps") return false;
+    return clientSupportsApps() && !templateReadByHost;
+  };
+
+  // A widget result carries the article twice (once for the Apps template,
+  // once inside widget_code), so cards that split by size pack half as much
+  // per part and still fit under the result ceiling.
+  const splitBudget = (): number | undefined =>
+    deliverAsWidget() ? Math.floor(cardSizeBudget() / 2) : undefined;
 
   // Who connected, and whether they can paint cards. A host that declares the
   // Apps extension here but never reads the template below is the signature
@@ -257,15 +336,20 @@ export function createServer(options: ServerOptions = {}): McpServer {
     // to a readable resource instead. A host that cannot follow a link can
     // ask for the inline copy with MCP_CHAT_CARDS_EMBED_HTML=1.
     const uri = cardHtmlUri(card.id);
+    const asWidget = deliverAsWidget();
     const content: CallToolResult["content"] = [
       {
         type: "text",
         text:
           `${card.summary}\n` +
-          (appsHost
-            ? "The card renders inline via the MCP Apps template."
-            : "The card renders inline via the MCP Apps template on supporting hosts. " +
-              `Read ${uri} for the same card as a standalone HTML document.`),
+          (asWidget
+            ? "Not displayed yet: this host does not mount MCP Apps views. Call show_widget " +
+              "with structuredContent.display (title, loading_messages, and widget_code " +
+              "unchanged) to show the card."
+            : appsHost
+              ? "The card renders inline via the MCP Apps template."
+              : "The card renders inline via the MCP Apps template on supporting hosts. " +
+                `Read ${uri} for the same card as a standalone HTML document.`),
       },
     ];
     if (!appsHost) {
@@ -295,6 +379,21 @@ export function createServer(options: ServerOptions = {}): McpServer {
       structuredContent: {
         card: { articleHtml: card.articleHtml, config: card.config },
         parts: card.parts ?? SINGLE_PART,
+        ...(asWidget
+          ? {
+              display: {
+                shown: false,
+                action: WIDGET_ACTION,
+                title: widgetTitle(card.articleHtml, card.config.kind),
+                loading_messages: widgetLoadingMessages(card.config.kind),
+                widget_code: buildWidgetCode({
+                  articleHtml: card.articleHtml,
+                  config: card.config,
+                  bundleUrl: widgetBundleUrl(SERVER_VERSION),
+                }),
+              },
+            }
+          : {}),
       },
     };
     // Measured last, so the check covers exactly what goes over the wire. A
@@ -307,6 +406,12 @@ export function createServer(options: ServerOptions = {}): McpServer {
       `mcp-chat-cards card ${card.config.kind} ${card.id} rendered ` +
         `(${size} chars, apps client: ${appsHost ? "yes" : "no"})`,
     );
+    if (asWidget) {
+      diag(
+        `mcp-chat-cards card ${card.id} sent as a visualizer widget ` +
+          `(render mode ${renderMode()}, template read by host: ${templateReadByHost ? "yes" : "no"})`,
+      );
+    }
     return result;
   };
 
@@ -324,6 +429,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
     },
     async () => {
       const text = buildCardTemplateHtml(SERVER_VERSION);
+      templateReadByHost = true;
       // The one host action that proves a mount was attempted.
       diag(`mcp-chat-cards template read by host (${CARD_TEMPLATE_URI}, ${text.length} chars)`);
       return { contents: [{ uri: CARD_TEMPLATE_URI, mimeType: MCP_APP_MIME_TYPE, text }] };
@@ -896,7 +1002,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
         if (!markdown) {
           throw new Error("Provide either markdown content or a path to a markdown file.");
         }
-        const card = buildMarkdownCard({ ...args, markdown });
+        const card = buildMarkdownCard({ ...args, markdown, budget: splitBudget() });
         const result = cardResult(card);
         if (truncatedNote && result.content[0]?.type === "text") {
           result.content[0].text += truncatedNote;
@@ -995,7 +1101,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
         if (files.length === 0) {
           throw new Error("Provide either files or an archivePath containing text files.");
         }
-        const card = buildCodeTourCard({ ...args, files });
+        const card = buildCodeTourCard({ ...args, files, budget: splitBudget() });
         const result = cardResult(card);
         if (skippedNote && result.content[0]?.type === "text") {
           result.content[0].text += skippedNote;

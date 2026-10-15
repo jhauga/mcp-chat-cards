@@ -85,10 +85,21 @@ covers this: it launches the OS default application detached, so nothing blocks.
    binding (anthropics/claude-ai-mcp#1069).
    Done when: a card renders in Claude via the connector and the README's "experimental"
    label comes off.
-- [ ] Tell the model never to assert that a card is visible. On a host that shows only the
-   text result, the model still writes "the card is up" because the tool said the card
-   renders inline; `SERVER_INSTRUCTIONS` in `src/server.ts` should ask for "the card was
-   produced" plus its conclusion, which stays true on every surface.
+- [x] Tell the model never to assert that a card is visible. Shipped with the visualizer
+   widget path: while a host has not read the template, the result summary says the card
+   is not displayed yet, and `structuredContent.display.action` (the part Claude's device
+   bridge forwards) says to claim visibility only after `show_widget` succeeds.
+- [x] Render cards in Claude app chats that reach the server through the device bridge.
+   `structuredContent.display` carries a ready-made `show_widget` widget whose script,
+   `widget/mcc-widget.js`, is served by jsDelivr from the release tag
+   (`src/cards/widget.ts`, `MCP_CHAT_CARDS_RENDER`).
+- [ ] Retire the widget default once the device bridge forwards `ui.resourceUri`
+   (anthropics/claude-ai-mcp#1069): after each Desktop update, check the per-server log
+   for `template read by host`; once it appears, consider defaulting
+   `MCP_CHAT_CARDS_RENDER` to `apps` so the first card per connection is not painted twice.
+- [ ] Widget media: the visualizer sandbox loads only from its CDN allowlist, so video and
+   image cards delivered as widgets show captions and links but no media. Offer a
+   poster-and-link layout for those kinds in widget mode.
 - [ ] Harden the HTTP entry point for daily use once a card is seen rendering through it:
    an opt-in variable for the local file tools over HTTP (off by default, since a tunnel
    exposes the server to the internet), a bounded card cache shared across sessions so
